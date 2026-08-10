@@ -2,6 +2,18 @@
 
 Stand: 19. Juli 2026
 
+## Entwicklungsgeräte
+
+- **D043:** Windows bleibt die primäre Entwicklungsplattform. Das MacBook Pro
+  15 Zoll (2016) wird ergänzend für Xcode, iOS-Simulator, Signing und echte
+  iOS-Testbuilds verwendet.
+- **D044:** EFI, OpenCore, OCLP, Bootloader, Firmware und macOS-Systemkonfiguration
+  werden im YDI-Workflow nicht verändert, außer der Nutzer fordert dies
+  ausdrücklich an.
+- **D045:** Vor der Anbindung echter Provider wird auf dem MacBook zuerst ein
+  reiner iOS-Demo-Build mit synthetischen Daten erstellt. Windows-, Web- und
+  lokale Scanfunktionen bleiben dabei unverändert.
+
 ## Web-Demo
 
 - **D041:** GitHub Pages wird ausschließlich mit `YDI_PUBLIC_DEMO=true`

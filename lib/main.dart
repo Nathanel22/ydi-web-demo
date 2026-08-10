@@ -1120,6 +1120,7 @@ class _ServicesPageState extends State<ServicesPage> {
                   SizedBox(
                     width: 230,
                     child: DropdownButtonFormField<String>(
+                      isExpanded: true,
                       initialValue: _selectedCategoryId,
                       decoration: InputDecoration(
                         labelText: text.category,
@@ -1153,6 +1154,7 @@ class _ServicesPageState extends State<ServicesPage> {
                   SizedBox(
                     width: 230,
                     child: DropdownButtonFormField<_ServiceSort>(
+                      isExpanded: true,
                       initialValue: _sort,
                       decoration: InputDecoration(
                         labelText: text.sortBy,

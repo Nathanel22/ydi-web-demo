@@ -2,6 +2,22 @@
 
 Stand: 19. Juli 2026
 
+## Dual-System-Entwicklung (10.08.2026)
+
+- Windows-PC bleibt der Hauptentwicklungsrechner für Flutter, Git, Web/Windows
+  sowie lokale GMX-/IMAP-Tests.
+- Ein MacBook Pro 15 Zoll (2016, Intel, 16 GB RAM, macOS Sequoia 15.7.9
+  über OpenCore Legacy Patcher 2.4.1) steht für Xcode, iOS-Simulator und
+  echte iOS-Testbuilds zur Verfügung.
+- Änderungen an EFI, OpenCore, OCLP, Bootloader, Firmware oder der
+  macOS-Systemkonfiguration sind ohne ausdrücklichen Auftrag ausgeschlossen.
+- Touch Bar/T1 und Apple-Account-Anmeldung werden separat behandelt und dürfen
+  die plattformunabhängige Flutter-Entwicklung nicht blockieren.
+- Der erste iOS-Meilenstein ist ein Demo-Daten-Build ohne echte Gmail- oder
+  GMX-Verbindung. So werden Toolchain, Plugins, Signing und UI getrennt geprüft.
+- Im Repository fehlen derzeit noch die Flutter-Plattformordner `ios/` und
+  `macos/`. Sie werden kontrolliert auf dem MacBook ergänzt.
+
 ## Web Prototype 0.2 – GitHub-Pages-Vorbereitung (01.08.2026)
 
 - eigener compile-time Demo-Modus `YDI_PUBLIC_DEMO=true`

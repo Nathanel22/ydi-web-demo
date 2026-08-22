@@ -1,6 +1,6 @@
 # YDI Decision Log
 
-Stand: 19. Juli 2026
+Stand: 22. August 2026
 
 ## Entwicklungsgeräte
 
@@ -13,6 +13,10 @@ Stand: 19. Juli 2026
 - **D045:** Vor der Anbindung echter Provider wird auf dem MacBook zuerst ein
   reiner iOS-Demo-Build mit synthetischen Daten erstellt. Windows-, Web- und
   lokale Scanfunktionen bleiben dabei unverändert.
+- **D046:** Der iOS-Bootstrap ist auf dem Branch `ios-bootstrap` mit Commit
+  `a1c3967` abgeschlossen. YDI wurde mit `YDI_PUBLIC_DEMO=true` und synthetischen
+  Daten erfolgreich im iPhone-16-Plus-Simulator gestartet. Echtes iPhone-Signing
+  und native Provider-Anbindungen für iOS bleiben separate spätere Schritte.
 
 ## Web-Demo
 

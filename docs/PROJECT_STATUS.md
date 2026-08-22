@@ -1,6 +1,6 @@
 # YDI Projektstatus
 
-Stand: 19. Juli 2026
+Stand: 22. August 2026
 
 ## Dual-System-Entwicklung (10.08.2026)
 
@@ -15,8 +15,33 @@ Stand: 19. Juli 2026
   die plattformunabhängige Flutter-Entwicklung nicht blockieren.
 - Der erste iOS-Meilenstein ist ein Demo-Daten-Build ohne echte Gmail- oder
   GMX-Verbindung. So werden Toolchain, Plugins, Signing und UI getrennt geprüft.
-- Im Repository fehlen derzeit noch die Flutter-Plattformordner `ios/` und
-  `macos/`. Sie werden kontrolliert auf dem MacBook ergänzt.
+- Der Flutter-Plattformordner `ios/` wurde kontrolliert auf dem MacBook ergänzt.
+- Der iOS-Bootstrap ist abgeschlossen; `macos/` wurde dabei nicht ergänzt.
+
+## iOS-Bootstrap (22.08.2026)
+
+- Branch: `ios-bootstrap`
+- Commit: `a1c3967 Bootstrap iOS simulator support`
+- YDI wurde erfolgreich im iPhone-16-Plus-Simulator gestartet.
+- Der Simulatorstart erfolgte mit `YDI_PUBLIC_DEMO=true` und ausschließlich
+  synthetischen Demodaten.
+- Der manuelle iOS-Demo-Smoke-Test wurde reproduzierbar auf einem iPhone 16 Plus
+  mit iOS 18.6 bestätigt: Das Dashboard öffnete korrekt, ausschließlich
+  synthetische Demodaten waren sichtbar und es erschienen keine echten lokalen
+  Konten oder Scandaten. Beim Start traten keine offensichtlichen Exceptions
+  oder Abstürze auf.
+- Letzter Teststand: `flutter test` vollständig bestanden (10/10 Tests).
+- Letzter Analysestand: `flutter analyze` ohne Fehler oder Warnungen; lediglich
+  zwei bereits bestehende Info-Hinweise.
+- Verwendete Mac-Toolchain:
+  - macOS Sequoia 15.7.9
+  - Flutter 3.44.9
+  - Xcode 16.4 / Build 16F6
+  - iOS 18.6 Simulator Runtime
+  - CocoaPods 1.17.0
+- Echtes iPhone-Signing und Gmail OAuth für iOS wurden noch nicht begonnen.
+- EFI, OpenCore, OCLP, Bootloader, Firmware und macOS-Systemkonfiguration wurden
+  nicht verändert.
 
 ## Web Prototype 0.2 – GitHub-Pages-Vorbereitung (01.08.2026)
 
@@ -109,10 +134,11 @@ Leitprinzip: **YDI analysiert und informiert; der Nutzer entscheidet und handelt
 7. Dienstkatalog, Kategorien und Alias-Domains kontrolliert erweitern
 8. CSV-Import entfernen, sobald Gmail und GMX stabil direkt funktionieren
 9. Android-Toolchain einrichten und ersten mobilen Build testen
-10. später iOS-Build auf aktueller Apple-Hardware vorbereiten
+10. erste iOS-spezifische Funktionen nach dem erfolgreich bestätigten
+    Demo-Smoke-Test kontrolliert beginnen
 
 ## Nächster Startpunkt
 
-Die native Windows-App starten, ein GMX-Konto neu scannen und anschließend einen
-Newsletter-Dienst öffnen. Bei vorhandenem HTTP(S)-Abmeldelink muss der Button die
-offizielle externe Seite öffnen; ohne gespeicherte URL bleibt er deaktiviert.
+Der iOS-Demo-Smoke-Test ist reproduzierbar bestätigt. Vor der nächsten
+plattformübergreifenden Änderung den Stand von Windows und Mac kontrolliert
+abgleichen und anschließend die erste iOS-spezifische Funktion planen.

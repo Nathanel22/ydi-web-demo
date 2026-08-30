@@ -2,14 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:ydi_app/config/public_demo.dart';
+import 'package:ydi_app/data/gmx_account_store.dart';
 import 'package:ydi_app/localization/app_language.dart';
 import 'package:ydi_app/main.dart';
 import 'package:ydi_app/data/scan_data_store.dart';
+import 'package:ydi_app/models/gmx_account.dart';
 
 void main() {
   setUp(() {
     languageNotifier.value = AppLanguage.german;
     scanDataNotifier.value = null;
+    gmxAccountsNotifier.value = const [];
   });
 
   Future<void> pumpApp(WidgetTester tester) async {
@@ -32,6 +35,25 @@ void main() {
     expect(find.text('E-Mail-Konto verbinden'), findsOneWidget);
     expect(find.text('Digitale Dienste'), findsNothing);
     expect(find.text('Netflix'), findsNothing);
+  });
+
+  testWidgets('Gespeichertes Konto ohne Scandaten zeigt Sync-Leerzustand', (
+    tester,
+  ) async {
+    gmxAccountsNotifier.value = const [
+      GmxAccount(accountId: 'gmx_synthetic', email: 'private-test@example.com'),
+    ];
+    await pumpApp(tester);
+
+    expect(find.text('GMX verbunden'), findsOneWidget);
+    expect(find.textContaining('keine Analyseergebnisse'), findsOneWidget);
+    expect(find.text('Jetzt synchronisieren'), findsOneWidget);
+    expect(find.text('Noch keine E-Mail-Konten verbunden'), findsNothing);
+
+    await tester.tap(find.text('Jetzt synchronisieren'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Welches Konto aktualisieren?'), findsOneWidget);
   });
 
   testWidgets('YDI startet mit dem gemeinsamen Dashboard', (tester) async {

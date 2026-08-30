@@ -16,6 +16,10 @@ abstract interface class GmxSecureStorage {
   Future<void> delete(String key);
 }
 
+class GmxCredentialStorageException implements Exception {
+  const GmxCredentialStorageException();
+}
+
 class FlutterGmxSecureStorage implements GmxSecureStorage {
   FlutterGmxSecureStorage({FlutterSecureStorage? storage})
     : _storage =
@@ -65,21 +69,34 @@ class GmxCredentialManager {
     final storedAtKey = _storedAtKey(account.accountId);
     try {
       await _secureStorage.write(passwordKey, password);
-      await _secureStorage.write(storedAtKey, _now().toUtc().toIso8601String());
+      final storedAtValue = _now().toUtc().toIso8601String();
+      await _secureStorage.write(storedAtKey, storedAtValue);
+      final verifiedPassword = await _secureStorage.read(passwordKey);
+      final verifiedStoredAt = await _secureStorage.read(storedAtKey);
+      if (verifiedPassword != password || verifiedStoredAt != storedAtValue) {
+        throw const GmxCredentialStorageException();
+      }
       await _accountStore.setCredentialAvailable(account.accountId, true);
     } catch (_) {
-      await _deleteKeys(account.accountId);
-      rethrow;
+      await _invalidate(account, deleteSecureValues: true);
+      throw const GmxCredentialStorageException();
     }
   }
 
   Future<String?> readValid(GmxAccount account) async {
     _ensureAllowed();
     if (!account.credentialAvailable) return null;
-    final password = await _secureStorage.read(_passwordKey(account.accountId));
-    final storedAtValue = await _secureStorage.read(
-      _storedAtKey(account.accountId),
-    );
+    late final String? password;
+    late final String? storedAtValue;
+    try {
+      password = await _secureStorage.read(_passwordKey(account.accountId));
+      storedAtValue = await _secureStorage.read(
+        _storedAtKey(account.accountId),
+      );
+    } catch (_) {
+      await _invalidate(account, deleteSecureValues: false);
+      throw const GmxCredentialStorageException();
+    }
     final storedAt = storedAtValue == null
         ? null
         : DateTime.tryParse(storedAtValue)?.toUtc();
@@ -91,7 +108,7 @@ class GmxCredentialManager {
         storedAt.isAfter(now) ||
         now.difference(storedAt) > maximumAge;
     if (invalid) {
-      await remove(account);
+      await _invalidate(account, deleteSecureValues: true);
       return null;
     }
     return password;
@@ -117,9 +134,8 @@ class GmxCredentialManager {
       if (!account.credentialAvailable) continue;
       try {
         await readValid(account);
-      } catch (_) {
-        // A temporarily unavailable platform key store must not prevent the
-        // app from starting. Credential use still remains fail-closed.
+      } on GmxCredentialStorageException {
+        // readValid already made the persisted availability status fail-closed.
       }
     }
   }
@@ -129,6 +145,24 @@ class GmxCredentialManager {
       _secureStorage.delete(_passwordKey(accountId)),
       _secureStorage.delete(_storedAtKey(accountId)),
     ]);
+  }
+
+  Future<void> _invalidate(
+    GmxAccount account, {
+    required bool deleteSecureValues,
+  }) async {
+    var deletionFailed = false;
+    if (deleteSecureValues) {
+      try {
+        await _deleteKeys(account.accountId);
+      } catch (_) {
+        deletionFailed = true;
+      }
+    }
+    if (_accountStore.findById(account.accountId) != null) {
+      await _accountStore.setCredentialAvailable(account.accountId, false);
+    }
+    if (deletionFailed) throw const GmxCredentialStorageException();
   }
 
   void _ensureAllowed() {

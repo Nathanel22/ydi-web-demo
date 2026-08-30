@@ -166,9 +166,12 @@ class _DashboardPageState extends State<DashboardPage> {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder(
-      valueListenable: scanDataNotifier,
-      builder: (context, importedData, _) => _buildDashboard(context),
+    return ValueListenableBuilder<List<GmxAccount>>(
+      valueListenable: gmxAccountsNotifier,
+      builder: (context, accounts, _) => ValueListenableBuilder(
+        valueListenable: scanDataNotifier,
+        builder: (context, importedData, _) => _buildDashboard(context),
+      ),
     );
   }
 
@@ -191,13 +194,20 @@ class _DashboardPageState extends State<DashboardPage> {
                       ),
                       if (allServices.isEmpty) ...[
                         const SizedBox(height: 64),
-                        _EmptyDashboard(
-                          onConnect: () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => const EmailAccountsPage(),
+                        if (!isPublicDemo &&
+                            gmxAccountsNotifier.value.isNotEmpty)
+                          _ConnectedEmptyDashboard(
+                            accounts: gmxAccountsNotifier.value,
+                            onSync: () => _refreshScan(context),
+                          )
+                        else
+                          _EmptyDashboard(
+                            onConnect: () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => const EmailAccountsPage(),
+                              ),
                             ),
                           ),
-                        ),
                       ] else ...[
                         const SizedBox(height: 28),
                         _AccountSelector(
@@ -553,6 +563,67 @@ class _EmptyDashboard extends StatelessWidget {
                 onPressed: onConnect,
                 icon: const Icon(Icons.add_rounded),
                 label: const Text('E-Mail-Konto verbinden'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ConnectedEmptyDashboard extends StatelessWidget {
+  const _ConnectedEmptyDashboard({
+    required this.accounts,
+    required this.onSync,
+  });
+
+  final List<GmxAccount> accounts;
+  final VoidCallback onSync;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = accounts.length == 1
+        ? 'GMX verbunden'
+        : '${accounts.length} GMX-Konten verbunden';
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Container(
+          padding: const EdgeInsets.all(32),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Column(
+            children: [
+              const CircleAvatar(
+                radius: 30,
+                backgroundColor: Color(0xFFE2F4EF),
+                foregroundColor: Color(0xFF16866C),
+                child: Icon(Icons.mark_email_read_outlined, size: 32),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Für dieses Konto liegen aktuell keine Analyseergebnisse vor. '
+                'Synchronisiere dein Konto, um die Übersicht zu aktualisieren.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Color(0xFF788399), height: 1.45),
+              ),
+              const SizedBox(height: 22),
+              FilledButton.icon(
+                onPressed: onSync,
+                icon: const Icon(Icons.sync_rounded),
+                label: const Text('Jetzt synchronisieren'),
               ),
             ],
           ),
@@ -1997,6 +2068,14 @@ class _GmxSetupPageState extends State<GmxSetupPage>
         _credentialAvailable = _savePasswordFor30Days;
         _success = true;
         _message = successMessage;
+      });
+    } on GmxCredentialStorageException {
+      if (!mounted) return;
+      setState(() {
+        _credentialAvailable = false;
+        _savePasswordFor30Days = false;
+        _message =
+            'Das gespeicherte Passwort ist nicht verfügbar. Bitte gib es erneut ein.';
       });
     } catch (_) {
       if (!mounted) return;

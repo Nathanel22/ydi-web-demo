@@ -221,6 +221,29 @@ void main() {
     expect(passwordValue(tester), isEmpty);
   });
 
+  testWidgets('Fehlendes gespeichertes Passwort erfordert erneute Eingabe', (
+    tester,
+  ) async {
+    final stores = persistence();
+    final account = await stores.accountStore.ensureAccount(
+      'private-test@example.com',
+    );
+    await stores.accountStore.setCredentialAvailable(account.accountId, true);
+    final scanner = _FakeGmxScanner(shouldFail: false);
+    await pumpPage(tester, scanner, stores, initialEmail: account.email);
+
+    await tester.ensureVisible(find.text('Verbindung testen'));
+    await tester.tap(find.text('Verbindung testen'));
+    await tester.pumpAndSettle();
+
+    expect(scanner.receivedPassword, isNull);
+    expect(
+      find.text('Bitte gib dein Anwendungspasswort erneut ein.'),
+      findsOneWidget,
+    );
+    expect(stores.accountStore.accounts.single.credentialAvailable, isFalse);
+  });
+
   testWidgets('GMX-Eingabefelder sind für iOS sicher konfiguriert', (
     tester,
   ) async {

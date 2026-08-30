@@ -22,7 +22,10 @@ class _MemoryPreferences implements GmxAccountPreferences {
 }
 
 class _MemorySecureStorage implements GmxSecureStorage {
-  final Map<String, String> values = {};
+  _MemorySecureStorage([Map<String, String>? values])
+    : values = values ?? <String, String>{};
+
+  final Map<String, String> values;
 
   @override
   Future<String?> read(String key) async => values[key];
@@ -36,6 +39,16 @@ class _MemorySecureStorage implements GmxSecureStorage {
   Future<void> delete(String key) async {
     values.remove(key);
   }
+}
+
+class _UnreadableSecureStorage extends _MemorySecureStorage {
+  @override
+  Future<String?> read(String key) => throw StateError('Synthetic read error.');
+}
+
+class _NonPersistingSecureStorage extends _MemorySecureStorage {
+  @override
+  Future<void> write(String key, String value) async {}
 }
 
 GmxAccountStore _accountStore(
@@ -122,6 +135,100 @@ void main() {
     expect(await manager.readValid(account), 'synthetic-password');
     expect(store.accounts.single.credentialAvailable, isTrue);
   });
+
+  test(
+    'Secure-Storage-Credential ist nach simuliertem Neustart lesbar',
+    () async {
+      final preferences = _MemoryPreferences();
+      final keychain = <String, String>{};
+      final firstStore = _accountStore(preferences);
+      final firstManager = GmxCredentialManager(
+        accountStore: firstStore,
+        secureStorage: _MemorySecureStorage(keychain),
+        now: () => DateTime.utc(2026, 8, 1),
+      );
+      final account = await firstStore.ensureAccount('private@test.example');
+      await firstManager.saveFor30Days(account, 'synthetic-password');
+
+      final restartedStore = _accountStore(preferences);
+      await restartedStore.load();
+      final restartedManager = GmxCredentialManager(
+        accountStore: restartedStore,
+        secureStorage: _MemorySecureStorage(keychain),
+        now: () => DateTime.utc(2026, 8, 2),
+      );
+
+      expect(
+        await restartedManager.readValid(restartedStore.accounts.single),
+        'synthetic-password',
+      );
+      expect(restartedStore.accounts.single.credentialAvailable, isTrue);
+    },
+  );
+
+  test(
+    'Fehlendes Credential setzt credentialAvailable nach Neustart zurück',
+    () async {
+      final preferences = _MemoryPreferences();
+      final firstStore = _accountStore(preferences);
+      final account = await firstStore.ensureAccount('private@test.example');
+      await firstStore.setCredentialAvailable(account.accountId, true);
+
+      final restartedStore = _accountStore(preferences);
+      await restartedStore.load();
+      final restartedManager = GmxCredentialManager(
+        accountStore: restartedStore,
+        secureStorage: _MemorySecureStorage(),
+        now: () => DateTime.utc(2026, 8, 2),
+      );
+
+      expect(
+        await restartedManager.readValid(restartedStore.accounts.single),
+        isNull,
+      );
+      expect(restartedStore.accounts, hasLength(1));
+      expect(restartedStore.accounts.single.credentialAvailable, isFalse);
+    },
+  );
+
+  test(
+    'Keychain-Lesefehler setzt credentialAvailable fail-closed zurück',
+    () async {
+      final store = _accountStore(_MemoryPreferences());
+      final account = await store.ensureAccount('private@test.example');
+      await store.setCredentialAvailable(account.accountId, true);
+      final manager = GmxCredentialManager(
+        accountStore: store,
+        secureStorage: _UnreadableSecureStorage(),
+        now: () => DateTime.utc(2026, 8, 2),
+      );
+
+      await expectLater(
+        manager.readValid(store.accounts.single),
+        throwsA(isA<GmxCredentialStorageException>()),
+      );
+      expect(store.accounts.single.credentialAvailable, isFalse);
+    },
+  );
+
+  test(
+    'Nicht lesbarer Keychain-Write wird nicht als verfügbar markiert',
+    () async {
+      final store = _accountStore(_MemoryPreferences());
+      final account = await store.ensureAccount('private@test.example');
+      final manager = GmxCredentialManager(
+        accountStore: store,
+        secureStorage: _NonPersistingSecureStorage(),
+        now: () => DateTime.utc(2026, 8, 2),
+      );
+
+      await expectLater(
+        manager.saveFor30Days(account, 'synthetic-password'),
+        throwsA(isA<GmxCredentialStorageException>()),
+      );
+      expect(store.accounts.single.credentialAvailable, isFalse);
+    },
+  );
 
   test(
     'Passwort wird nach mehr als 30 Tagen verworfen, Konto bleibt',

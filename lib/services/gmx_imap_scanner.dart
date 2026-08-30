@@ -1,8 +1,8 @@
 import 'package:enough_mail/enough_mail.dart';
 import 'package:flutter/material.dart';
 
+import '../config/public_demo.dart';
 import '../data/scan_data_store.dart';
-import '../data/account_scan_store.dart';
 import '../data/service_catalog.dart';
 import '../models/scan_dataset.dart';
 import '../models/service_category.dart';
@@ -11,9 +11,22 @@ import '../models/service_item.dart';
 final gmxImapScanner = GmxImapScanner();
 
 class GmxImapScanner {
-  static const maximumMessages = 1000;
+  GmxImapScanner({
+    RealGmxAccessPolicy accessPolicy = realGmxAccessPolicy,
+    ImapClient Function()? clientFactory,
+  }) : _accessPolicy = accessPolicy,
+       _clientFactory = clientFactory;
+
+  static const maximumMessages = 50;
+  static const headerFetchCriteria =
+      'BODY.PEEK[HEADER.FIELDS (FROM SUBJECT LIST-UNSUBSCRIBE '
+      'LIST-UNSUBSCRIBE-POST LIST-ID)]';
+
+  final RealGmxAccessPolicy _accessPolicy;
+  final ImapClient Function()? _clientFactory;
 
   Future<void> testConnection(String email, String password) async {
+    _accessPolicy.ensureAllowed();
     final client = _client();
     try {
       await client.connectToServer('imap.gmx.net', 993, isSecure: true);
@@ -29,6 +42,7 @@ class GmxImapScanner {
     String password, {
     required void Function(int current, int total) onProgress,
   }) async {
+    _accessPolicy.ensureAllowed();
     final normalizedEmail = email.trim().toLowerCase();
     final account = 'GMX · $normalizedEmail';
     final client = _client();
@@ -45,8 +59,7 @@ class GmxImapScanner {
 
       final result = await client.fetchRecentMessages(
         messageCount: count,
-        criteria:
-            'BODY.PEEK[HEADER.FIELDS (FROM SUBJECT LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST LIST-ID)]',
+        criteria: headerFetchCriteria,
       );
       final knownServices = scanDataNotifier.value?.services ?? const [];
       final aggregated = <String, _GmxService>{};
@@ -67,11 +80,13 @@ class GmxImapScanner {
     }
   }
 
-  ImapClient _client() => ImapClient(
-    isLogEnabled: false,
-    defaultWriteTimeout: const Duration(seconds: 20),
-    defaultResponseTimeout: const Duration(seconds: 30),
-  );
+  ImapClient _client() =>
+      _clientFactory?.call() ??
+      ImapClient(
+        isLogEnabled: false,
+        defaultWriteTimeout: const Duration(seconds: 20),
+        defaultResponseTimeout: const Duration(seconds: 30),
+      );
 
   Future<void> _close(ImapClient client) async {
     try {
@@ -81,10 +96,7 @@ class GmxImapScanner {
     }
   }
 
-  Future<ScanDataset> _replaceAccount(
-    String account,
-    List<ServiceItem> services,
-  ) async {
+  ScanDataset _replaceAccount(String account, List<ServiceItem> services) {
     final incoming = ScanDataset(
       services: services,
       sourceFiles: ['gmx-imap:$account'],
@@ -101,9 +113,7 @@ class GmxImapScanner {
     final complete = current == null
         ? incoming
         : current.withoutAccounts(labelsToReplace).mergedWith(incoming);
-    await scanDataStore.save(complete);
-    await accountScanStore.markScanned(account);
-    return scanDataNotifier.value!;
+    return scanDataStore.setMemoryOnlyDataset(account, complete);
   }
 
   void _aggregate(

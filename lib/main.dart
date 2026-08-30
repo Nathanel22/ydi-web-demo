@@ -1802,15 +1802,23 @@ class _EmailProviderCard extends StatelessWidget {
 }
 
 class GmxSetupPage extends StatefulWidget {
-  const GmxSetupPage({super.key, this.initialEmail});
+  const GmxSetupPage({
+    super.key,
+    this.initialEmail,
+    this.scanner,
+    this.realGmxTestAllowed = isRealGmxTestEnabled,
+  });
 
   final String? initialEmail;
+  final GmxImapScanner? scanner;
+  final bool realGmxTestAllowed;
 
   @override
   State<GmxSetupPage> createState() => _GmxSetupPageState();
 }
 
-class _GmxSetupPageState extends State<GmxSetupPage> {
+class _GmxSetupPageState extends State<GmxSetupPage>
+    with WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _emailController;
   final _passwordController = TextEditingController();
@@ -1821,24 +1829,51 @@ class _GmxSetupPageState extends State<GmxSetupPage> {
   String? _message;
   bool _success = false;
 
+  String get _connectionDescription {
+    if (kIsWeb) {
+      return 'Der Chrome-Prototyp kann keine direkte verschlüsselte '
+          'IMAP-Verbindung öffnen. Die Verbindung wird in der nativen App '
+          'aktiviert.';
+    }
+    if (widget.realGmxTestAllowed) {
+      return 'Privater Memory-only-Test: YDI verbindet sich direkt und '
+          'verschlüsselt mit GMX. Die Ergebnisse bleiben nur bis zum nächsten '
+          'App-Neustart im Arbeitsspeicher.';
+    }
+    return 'YDI verbindet sich nur in einem ausdrücklich freigegebenen '
+        'privaten Test-Build mit GMX.';
+  }
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _emailController = TextEditingController(text: widget.initialEmail ?? '');
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _emailController.dispose();
     _passwordController.clear();
     _passwordController.dispose();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) {
+      _passwordController.clear();
+    }
+  }
+
   Future<void> _testConnection() async {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      _passwordController.clear();
+      return;
+    }
     await _run(() async {
-      await gmxImapScanner.testConnection(
+      await (widget.scanner ?? gmxImapScanner).testConnection(
         _emailController.text,
         _passwordController.text,
       );
@@ -1851,9 +1886,12 @@ class _GmxSetupPageState extends State<GmxSetupPage> {
   }
 
   Future<void> _scan() async {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      _passwordController.clear();
+      return;
+    }
     await _run(() async {
-      await gmxImapScanner.scanAndSave(
+      await (widget.scanner ?? gmxImapScanner).scanAndSave(
         _emailController.text,
         _passwordController.text,
         onProgress: (current, total) {
@@ -1865,7 +1903,6 @@ class _GmxSetupPageState extends State<GmxSetupPage> {
           });
         },
       );
-      _passwordController.clear();
       if (!mounted) return;
       setState(() {
         _success = true;
@@ -1889,7 +1926,10 @@ class _GmxSetupPageState extends State<GmxSetupPage> {
             'Verbindung fehlgeschlagen. Prüfe E-Mail-Adresse, Anwendungspasswort und ob IMAP bei GMX aktiviert ist.';
       });
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        _passwordController.clear();
+        setState(() => _busy = false);
+      }
     }
   }
 
@@ -1920,9 +1960,7 @@ class _GmxSetupPageState extends State<GmxSetupPage> {
               ),
               const SizedBox(height: 10),
               Text(
-                kIsWeb
-                    ? 'Der Chrome-Prototyp kann keine direkte verschlüsselte IMAP-Verbindung öffnen. Die Verbindung wird in der nativen App aktiviert.'
-                    : 'YDI verbindet sich direkt und verschlüsselt mit GMX. Es werden keine Zugangsdaten an einen YDI-Server übertragen.',
+                _connectionDescription,
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Color(0xFF788399)),
               ),
@@ -1943,7 +1981,7 @@ class _GmxSetupPageState extends State<GmxSetupPage> {
                 number: 3,
                 title: 'Lokal analysieren',
                 description:
-                    'YDI liest nur benötigte Header und Metadaten. Mailtexte und Anhänge bleiben unberührt.',
+                    'YDI liest höchstens 50 aktuelle Header. Mailtexte und Anhänge bleiben unberührt; die Testergebnisse werden nicht dauerhaft gespeichert.',
               ),
               const SizedBox(height: 16),
               if (kIsWeb)
@@ -1951,6 +1989,22 @@ class _GmxSetupPageState extends State<GmxSetupPage> {
                   onPressed: null,
                   icon: const Icon(Icons.lock_outline_rounded),
                   label: const Text('In der nativen App verfügbar'),
+                )
+              else if (!widget.realGmxTestAllowed)
+                Column(
+                  children: [
+                    const Text(
+                      'Der echte GMX-Test ist in diesem Build deaktiviert.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Color(0xFF657086)),
+                    ),
+                    const SizedBox(height: 12),
+                    FilledButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.lock_outline_rounded),
+                      label: const Text('Privater GMX-Test nicht freigegeben'),
+                    ),
+                  ],
                 )
               else
                 Form(
@@ -1981,6 +2035,8 @@ class _GmxSetupPageState extends State<GmxSetupPage> {
                         controller: _passwordController,
                         enabled: !_busy,
                         obscureText: _hidePassword,
+                        autocorrect: false,
+                        enableSuggestions: false,
                         decoration: InputDecoration(
                           labelText: 'Anwendungspasswort',
                           prefixIcon: const Icon(Icons.lock_outline_rounded),

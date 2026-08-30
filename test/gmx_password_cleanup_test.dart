@@ -129,6 +129,7 @@ void main() {
         ),
       ),
     );
+    await tester.pumpAndSettle();
   }
 
   Future<void> enterCredentialsAndTest(WidgetTester tester) async {
@@ -229,12 +230,15 @@ void main() {
     final scanner = _FakeGmxScanner(shouldFail: false);
     await pumpPage(tester, scanner, stores, initialEmail: account.email);
 
-    await tester.ensureVisible(find.text('Verbindung testen'));
-    await tester.tap(find.text('Verbindung testen'));
+    expect(find.text('Anwendungspasswort'), findsNothing);
+    expect(find.text('Synchronisieren'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('Synchronisieren'));
+    await tester.tap(find.text('Synchronisieren'));
     await tester.pumpAndSettle();
 
     expect(scanner.receivedPassword, 'synthetic-password');
-    expect(passwordValue(tester), isEmpty);
+    expect(find.text('Synchronisierung erfolgreich'), findsOneWidget);
   });
 
   testWidgets(
@@ -284,13 +288,16 @@ void main() {
         initialEmail: restartedAccountStore.accounts.single.email,
       );
 
-      await tester.ensureVisible(find.text('Analyse starten'));
-      await tester.tap(find.text('Analyse starten'));
+      expect(find.text('Anwendungspasswort'), findsNothing);
+      expect(find.text('Synchronisieren'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('Synchronisieren'));
+      await tester.tap(find.text('Synchronisieren'));
       await tester.pumpAndSettle();
 
       expect(scanner.receivedPassword, 'synthetic-password');
       expect(find.text('Bitte gib dein Anwendungspasswort ein.'), findsNothing);
-      expect(passwordValue(tester), isEmpty);
+      expect(find.text('Synchronisierung erfolgreich'), findsOneWidget);
     },
   );
 
@@ -308,12 +315,9 @@ void main() {
     final scanner = _FakeGmxScanner(shouldFail: false);
     await pumpPage(tester, scanner, stores, initialEmail: account.email);
 
-    await tester.ensureVisible(find.text('Analyse starten'));
-    await tester.tap(find.text('Analyse starten'));
-    await tester.pumpAndSettle();
-
+    expect(find.text('Anwendungspasswort'), findsOneWidget);
+    expect(find.text('Synchronisieren'), findsNothing);
     expect(scanner.receivedPassword, isNull);
-    expect(find.text('Bitte gib dein Anwendungspasswort ein.'), findsOneWidget);
     expect(stores.accountStore.accounts, hasLength(1));
     expect(stores.accountStore.accounts.single.credentialAvailable, isFalse);
   });
@@ -329,16 +333,33 @@ void main() {
     final scanner = _FakeGmxScanner(shouldFail: false);
     await pumpPage(tester, scanner, stores, initialEmail: account.email);
 
-    await tester.ensureVisible(find.text('Verbindung testen'));
-    await tester.tap(find.text('Verbindung testen'));
+    expect(find.text('Anwendungspasswort'), findsOneWidget);
+    expect(find.text('Synchronisieren'), findsNothing);
+    expect(scanner.receivedPassword, isNull);
+    expect(stores.accountStore.accounts.single.credentialAvailable, isFalse);
+  });
+
+  testWidgets('Fehlgeschlagener Background-Sync zeigt generischen Fehler', (
+    tester,
+  ) async {
+    final stores = persistence();
+    var account = await stores.accountStore.ensureAccount(
+      'private-test@example.com',
+    );
+    await stores.credentialManager.saveFor30Days(account, 'synthetic-password');
+    account = stores.accountStore.findById(account.accountId)!;
+    final scanner = _FakeGmxScanner(shouldFail: true);
+    await pumpPage(tester, scanner, stores, initialEmail: account.email);
+
+    await tester.tap(find.text('Synchronisieren'));
     await tester.pumpAndSettle();
 
-    expect(scanner.receivedPassword, isNull);
     expect(
-      find.text('Bitte gib dein Anwendungspasswort erneut ein.'),
+      find.text('Synchronisierung fehlgeschlagen. Bitte versuche es erneut.'),
       findsOneWidget,
     );
-    expect(stores.accountStore.accounts.single.credentialAvailable, isFalse);
+    expect(find.textContaining('Synthetic scan failure'), findsNothing);
+    expect(find.textContaining('StateError'), findsNothing);
   });
 
   testWidgets('GMX-Eingabefelder sind für iOS sicher konfiguriert', (

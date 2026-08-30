@@ -1917,6 +1917,8 @@ class _GmxSetupPageState extends State<GmxSetupPage>
   bool _hidePassword = true;
   bool _savePasswordFor30Days = false;
   bool _credentialAvailable = false;
+  bool _checkingCredential = false;
+  int _credentialCheckGeneration = 0;
   bool _busy = false;
   int _current = 0;
   int _total = 0;
@@ -1949,8 +1951,12 @@ class _GmxSetupPageState extends State<GmxSetupPage>
     WidgetsBinding.instance.addObserver(this);
     _emailController = TextEditingController(text: widget.initialEmail ?? '');
     final account = _accountStore.findByEmail(_emailController.text);
-    _credentialAvailable = account?.credentialAvailable ?? false;
-    _savePasswordFor30Days = _credentialAvailable;
+    if (account?.credentialAvailable == true) {
+      _checkingCredential = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _verifyStoredCredential(account!);
+      });
+    }
   }
 
   @override
@@ -1970,15 +1976,39 @@ class _GmxSetupPageState extends State<GmxSetupPage>
   }
 
   void _emailChanged(String value) {
+    _credentialCheckGeneration++;
     final account = _accountStore.findByEmail(value);
-    final available = account?.credentialAvailable ?? false;
-    if (available == _credentialAvailable &&
-        available == _savePasswordFor30Days) {
-      return;
+    setState(() {
+      _credentialAvailable = false;
+      _savePasswordFor30Days = false;
+      _checkingCredential = account?.credentialAvailable == true;
+    });
+    if (account?.credentialAvailable == true) {
+      _verifyStoredCredential(account!);
     }
+  }
+
+  Future<void> _verifyStoredCredential(GmxAccount account) async {
+    final generation = ++_credentialCheckGeneration;
+    String? credential;
+    try {
+      credential = await _credentialManager.readValid(account);
+    } catch (_) {
+      credential = null;
+    }
+    if (!mounted || generation != _credentialCheckGeneration) return;
+    final currentAccount = _accountStore.findByEmail(_emailController.text);
+    if (currentAccount?.accountId != account.accountId) return;
+    final available = credential?.isNotEmpty == true;
+    credential = null;
     setState(() {
       _credentialAvailable = available;
       _savePasswordFor30Days = available;
+      _checkingCredential = false;
+      if (!available && account.credentialAvailable) {
+        _message =
+            'Das gespeicherte Passwort ist nicht verfügbar. Bitte gib es erneut ein.';
+      }
     });
   }
 
@@ -2000,6 +2030,7 @@ class _GmxSetupPageState extends State<GmxSetupPage>
       _passwordController.clear();
       return;
     }
+    final usesStoredCredential = _credentialAvailable;
     await _run(
       operation: (password) async {
         await (widget.scanner ?? gmxImapScanner).scanAndSave(
@@ -2016,8 +2047,15 @@ class _GmxSetupPageState extends State<GmxSetupPage>
         );
       },
       markScanned: true,
-      successMessage:
-          'Analyse abgeschlossen. Die Ergebnisse wurden lokal verschlüsselt gespeichert.',
+      progressMessage: usesStoredCredential
+          ? 'Synchronisiere …'
+          : 'Verschlüsselte Verbindung wird hergestellt …',
+      successMessage: usesStoredCredential
+          ? 'Synchronisierung erfolgreich'
+          : 'Analyse abgeschlossen. Die Ergebnisse wurden lokal verschlüsselt gespeichert.',
+      failureMessage: usesStoredCredential
+          ? 'Synchronisierung fehlgeschlagen. Bitte versuche es erneut.'
+          : 'Verbindung fehlgeschlagen. Prüfe E-Mail-Adresse, Anwendungspasswort und ob IMAP bei GMX aktiviert ist.',
     );
   }
 
@@ -2025,11 +2063,14 @@ class _GmxSetupPageState extends State<GmxSetupPage>
     required Future<void> Function(String password) operation,
     required bool markScanned,
     required String successMessage,
+    String progressMessage = 'Verschlüsselte Verbindung wird hergestellt …',
+    String failureMessage =
+        'Verbindung fehlgeschlagen. Prüfe E-Mail-Adresse, Anwendungspasswort und ob IMAP bei GMX aktiviert ist.',
   }) async {
     setState(() {
       _busy = true;
       _success = false;
-      _message = 'Verschlüsselte Verbindung wird hergestellt …';
+      _message = progressMessage;
     });
     try {
       final typedPassword = _passwordController.text;
@@ -2080,8 +2121,7 @@ class _GmxSetupPageState extends State<GmxSetupPage>
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _message =
-            'Verbindung fehlgeschlagen. Prüfe E-Mail-Adresse, Anwendungspasswort und ob IMAP bei GMX aktiviert ist.';
+        _message = failureMessage;
       });
     } finally {
       if (mounted) {
@@ -2119,7 +2159,9 @@ class _GmxSetupPageState extends State<GmxSetupPage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('GMX verbinden'),
+        title: Text(
+          _credentialAvailable ? 'GMX synchronisieren' : 'GMX verbinden',
+        ),
         backgroundColor: const Color(0xFFF5F7FB),
         surfaceTintColor: Colors.transparent,
       ),
@@ -2135,10 +2177,15 @@ class _GmxSetupPageState extends State<GmxSetupPage>
                 color: Color(0xFF29A583),
               ),
               const SizedBox(height: 18),
-              const Text(
-                'GMX sicher vorbereiten',
+              Text(
+                _credentialAvailable
+                    ? 'GMX synchronisieren'
+                    : 'GMX sicher vorbereiten',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800),
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               const SizedBox(height: 10),
               Text(
@@ -2146,25 +2193,27 @@ class _GmxSetupPageState extends State<GmxSetupPage>
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Color(0xFF788399)),
               ),
-              const SizedBox(height: 24),
-              const _GmxSetupStep(
-                number: 1,
-                title: 'IMAP bei GMX aktivieren',
-                description:
-                    'In GMX: E-Mail-Einstellungen → POP3/IMAP Abruf → Zugriff erlauben.',
-              ),
-              const _GmxSetupStep(
-                number: 2,
-                title: 'Anwendungspasswort verwenden',
-                description:
-                    'Wenn GMX es verlangt, ein eigenes Anwendungspasswort für YDI erstellen – nicht das normale Passwort weitergeben.',
-              ),
-              const _GmxSetupStep(
-                number: 3,
-                title: 'Lokal analysieren',
-                description:
-                    'YDI liest höchstens 50 aktuelle Header. Mailtexte und Anhänge bleiben unberührt; die Testergebnisse werden nicht dauerhaft gespeichert.',
-              ),
+              if (!_credentialAvailable && !_checkingCredential) ...[
+                const SizedBox(height: 24),
+                const _GmxSetupStep(
+                  number: 1,
+                  title: 'IMAP bei GMX aktivieren',
+                  description:
+                      'In GMX: E-Mail-Einstellungen → POP3/IMAP Abruf → Zugriff erlauben.',
+                ),
+                const _GmxSetupStep(
+                  number: 2,
+                  title: 'Anwendungspasswort verwenden',
+                  description:
+                      'Wenn GMX es verlangt, ein eigenes Anwendungspasswort für YDI erstellen – nicht das normale Passwort weitergeben.',
+                ),
+                const _GmxSetupStep(
+                  number: 3,
+                  title: 'Lokal analysieren',
+                  description:
+                      'YDI liest höchstens 50 aktuelle Header. Mailtexte und Anhänge bleiben unberührt; die Ergebnisse werden lokal verschlüsselt gespeichert.',
+                ),
+              ],
               const SizedBox(height: 16),
               if (kIsWeb)
                 FilledButton.icon(
@@ -2195,7 +2244,10 @@ class _GmxSetupPageState extends State<GmxSetupPage>
                     children: [
                       TextFormField(
                         controller: _emailController,
-                        enabled: !_busy,
+                        enabled:
+                            !_busy &&
+                            !_checkingCredential &&
+                            !_credentialAvailable,
                         onChanged: _emailChanged,
                         keyboardType: TextInputType.emailAddress,
                         autocorrect: false,
@@ -2217,58 +2269,87 @@ class _GmxSetupPageState extends State<GmxSetupPage>
                             ? null
                             : 'Bitte gib eine gültige E-Mail-Adresse ein.',
                       ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _passwordController,
-                        enabled: !_busy,
-                        keyboardType: TextInputType.visiblePassword,
-                        obscureText: _hidePassword,
-                        autocorrect: false,
-                        enableSuggestions: false,
-                        textCapitalization: TextCapitalization.none,
-                        autofillHints: const <String>[],
-                        decoration: InputDecoration(
-                          labelText: 'Anwendungspasswort',
-                          prefixIcon: const Icon(Icons.lock_outline_rounded),
-                          suffixIcon: IconButton(
-                            onPressed: () =>
-                                setState(() => _hidePassword = !_hidePassword),
-                            icon: Icon(
-                              _hidePassword
-                                  ? Icons.visibility_outlined
-                                  : Icons.visibility_off_outlined,
-                            ),
-                          ),
-                          filled: true,
-                          fillColor: Colors.white,
-                          border: const OutlineInputBorder(),
+                      if (_checkingCredential) ...[
+                        const SizedBox(height: 18),
+                        const LinearProgressIndicator(),
+                        const SizedBox(height: 10),
+                        const Text(
+                          'Gespeichertes Passwort wird sicher geprüft …',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Color(0xFF657086)),
                         ),
-                        validator: (value) =>
-                            (value == null || value.isEmpty) &&
-                                !_credentialAvailable
-                            ? 'Bitte gib dein Anwendungspasswort ein.'
-                            : null,
-                      ),
-                      const SizedBox(height: 10),
-                      CheckboxListTile(
-                        value: _savePasswordFor30Days,
-                        onChanged: _busy
-                            ? null
-                            : (value) => setState(
-                                () => _savePasswordFor30Days = value ?? false,
+                      ] else if (!_credentialAvailable) ...[
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _passwordController,
+                          enabled: !_busy,
+                          keyboardType: TextInputType.visiblePassword,
+                          obscureText: _hidePassword,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          textCapitalization: TextCapitalization.none,
+                          autofillHints: const <String>[],
+                          decoration: InputDecoration(
+                            labelText: 'Anwendungspasswort',
+                            prefixIcon: const Icon(Icons.lock_outline_rounded),
+                            suffixIcon: IconButton(
+                              onPressed: () => setState(
+                                () => _hidePassword = !_hidePassword,
                               ),
-                        contentPadding: EdgeInsets.zero,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        title: const Text(
-                          'Passwort 30 Tage sicher speichern',
-                          style: TextStyle(fontWeight: FontWeight.w700),
+                              icon: Icon(
+                                _hidePassword
+                                    ? Icons.visibility_outlined
+                                    : Icons.visibility_off_outlined,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.white,
+                            border: const OutlineInputBorder(),
+                          ),
+                          validator: (value) => value == null || value.isEmpty
+                              ? 'Bitte gib dein Anwendungspasswort ein.'
+                              : null,
                         ),
-                        subtitle: Text(
-                          _credentialAvailable
-                              ? 'Ein gültiges Passwort ist im sicheren Plattformspeicher verfügbar.'
-                              : 'Ohne Auswahl wird das Passwort nach dem Versuch verworfen.',
+                        const SizedBox(height: 10),
+                        CheckboxListTile(
+                          value: _savePasswordFor30Days,
+                          onChanged: _busy
+                              ? null
+                              : (value) => setState(
+                                  () => _savePasswordFor30Days = value ?? false,
+                                ),
+                          contentPadding: EdgeInsets.zero,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          title: const Text(
+                            'Passwort 30 Tage sicher speichern',
+                            style: TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          subtitle: const Text(
+                            'Ohne Auswahl wird das Passwort nach dem Versuch verworfen.',
+                          ),
                         ),
-                      ),
+                      ] else ...[
+                        const SizedBox(height: 14),
+                        const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.verified_user_outlined,
+                              color: Color(0xFF16866C),
+                            ),
+                            SizedBox(width: 8),
+                            Flexible(
+                              child: Text(
+                                'Gespeichertes Passwort sicher verfügbar',
+                                style: TextStyle(
+                                  color: Color(0xFF16866C),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                       if (_credentialAvailable) ...[
                         TextButton.icon(
                           onPressed: _busy ? null : _removeStoredPassword,
@@ -2300,25 +2381,36 @@ class _GmxSetupPageState extends State<GmxSetupPage>
                         ),
                       ],
                       const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: _busy ? null : _testConnection,
-                              icon: const Icon(Icons.link_rounded),
-                              label: const Text('Verbindung testen'),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
+                      if (!_checkingCredential)
+                        if (_credentialAvailable)
+                          SizedBox(
+                            width: double.infinity,
                             child: FilledButton.icon(
                               onPressed: _busy ? null : _scan,
-                              icon: const Icon(Icons.manage_search_rounded),
-                              label: const Text('Analyse starten'),
+                              icon: const Icon(Icons.sync_rounded),
+                              label: const Text('Synchronisieren'),
                             ),
+                          )
+                        else
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: _busy ? null : _testConnection,
+                                  icon: const Icon(Icons.link_rounded),
+                                  label: const Text('Verbindung testen'),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: _busy ? null : _scan,
+                                  icon: const Icon(Icons.manage_search_rounded),
+                                  label: const Text('Analyse starten'),
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
                     ],
                   ),
                 ),

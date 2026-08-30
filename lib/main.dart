@@ -5,14 +5,17 @@ import 'package:url_launcher/url_launcher.dart';
 import 'config/public_demo.dart';
 import 'data/app_entitlements.dart';
 import 'data/account_scan_store.dart';
+import 'data/gmx_account_store.dart';
 import 'data/scan_data_store.dart';
 import 'localization/app_language.dart';
+import 'models/gmx_account.dart';
 import 'models/service_category.dart';
 import 'models/service_item.dart';
 import 'services/scan_refresh_service.dart';
 import 'services/google_auth_service.dart';
 import 'services/google_sign_in_button.dart';
 import 'services/gmail_metadata_scanner.dart';
+import 'services/gmx_credential_manager.dart';
 import 'services/gmx_imap_scanner.dart';
 
 String _providerLabel(String account) {
@@ -53,6 +56,8 @@ Future<void> main() async {
   } else {
     await scanDataStore.load();
     await accountScanStore.load();
+    await gmxAccountStore.load();
+    await gmxCredentialManager.discardExpiredCredentials();
     await googleAuthService.initialize();
   }
   runApp(const YdiApp());
@@ -423,7 +428,10 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Future<void> _refreshScan(BuildContext context) async {
-    final accounts = scanDataNotifier.value?.accounts ?? const <String>[];
+    final accounts = {
+      ...?scanDataNotifier.value?.accounts,
+      ...gmxAccountsNotifier.value.map((account) => account.scanAccountLabel),
+    }.toList();
     if (accounts.isEmpty) {
       await Navigator.of(
         context,
@@ -1423,8 +1431,8 @@ class SettingsPage extends StatelessWidget {
 class EmailAccountsPage extends StatelessWidget {
   const EmailAccountsPage({super.key});
 
-  String _lastScanLabel(String account) {
-    final scannedAt = accountScanTimesNotifier.value[account];
+  String _lastScanLabel(GmxAccount account) {
+    final scannedAt = account.lastSuccessfulScanAt;
     if (scannedAt == null) return 'Scanzeit noch nicht erfasst';
     final local = scannedAt.toLocal();
     String two(int value) => value.toString().padLeft(2, '0');
@@ -1432,8 +1440,8 @@ class EmailAccountsPage extends StatelessWidget {
         '${two(local.hour)}:${two(local.minute)} Uhr';
   }
 
-  Future<void> _removeAccount(BuildContext context, String account) async {
-    final email = _emailAddressFromAccount(account) ?? account;
+  Future<void> _removeAccount(BuildContext context, GmxAccount account) async {
+    final email = account.email;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -1459,7 +1467,9 @@ class EmailAccountsPage extends StatelessWidget {
       ),
     );
     if (confirmed != true) return;
-    await scanDataStore.removeAccount(account);
+    await scanDataStore.removeAccount(account.scanAccountLabel);
+    await accountScanStore.remove(account.scanAccountLabel);
+    await gmxCredentialManager.deleteAccount(account);
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('$email wurde von diesem Gerät entfernt.')),
@@ -1481,108 +1491,115 @@ class EmailAccountsPage extends StatelessWidget {
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 680),
-          child: ValueListenableBuilder(
-            valueListenable: scanDataNotifier,
-            builder: (context, dataset, _) {
-              final gmailAccounts =
-                  dataset?.accounts
-                      .where(
-                        (account) => account.toLowerCase().startsWith('gmail'),
-                      )
-                      .length ??
-                  0;
-              final gmxAccounts =
-                  dataset?.accounts
-                      .where(
-                        (account) => account.toLowerCase().startsWith('gmx'),
-                      )
-                      .toList() ??
-                  const <String>[];
-              return ListView(
-                padding: const EdgeInsets.all(24),
-                children: [
-                  const Text(
-                    'Anbieter verbinden',
-                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'YDI analysiert nur die notwendigen Metadaten und speichert die Ergebnisse lokal.',
-                    style: TextStyle(color: Color(0xFF788399)),
-                  ),
-                  const SizedBox(height: 22),
-                  _EmailProviderCard(
-                    icon: Icons.g_mobiledata_rounded,
-                    color: const Color(0xFF526DFF),
-                    title: 'Google / Gmail',
-                    subtitle: gmailAccounts == 0
-                        ? 'Noch kein Konto analysiert'
-                        : '$gmailAccounts Konto${gmailAccounts == 1 ? '' : 'en'} verbunden',
-                    status: gmailAccounts == 0 ? 'Einrichten' : 'Verwalten',
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => const GoogleAccountsPage(),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  _EmailProviderCard(
-                    icon: Icons.mail_outline_rounded,
-                    color: const Color(0xFF29A583),
-                    title: 'GMX',
-                    subtitle: gmxAccounts.isEmpty
-                        ? 'Direkter Connector wird vorbereitet'
-                        : '${gmxAccounts.length} Konto${gmxAccounts.length == 1 ? '' : 'en'} lokal erfasst',
-                    status: gmxAccounts.isEmpty ? 'Einrichten' : 'Hinzufügen',
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const GmxSetupPage()),
-                    ),
-                  ),
-                  if (gmxAccounts.isNotEmpty) ...[
-                    const SizedBox(height: 18),
+          child: ValueListenableBuilder<List<GmxAccount>>(
+            valueListenable: gmxAccountsNotifier,
+            builder: (context, gmxAccounts, _) => ValueListenableBuilder(
+              valueListenable: scanDataNotifier,
+              builder: (context, dataset, _) {
+                final gmailAccounts =
+                    dataset?.accounts
+                        .where(
+                          (account) =>
+                              account.toLowerCase().startsWith('gmail'),
+                        )
+                        .length ??
+                    0;
+                return ListView(
+                  padding: const EdgeInsets.all(24),
+                  children: [
                     const Text(
-                      'Verbundene GMX-Konten',
+                      'Anbieter verbinden',
                       style: TextStyle(
-                        fontSize: 18,
+                        fontSize: 22,
                         fontWeight: FontWeight.w800,
                       ),
                     ),
-                    const SizedBox(height: 10),
-                    for (final account in gmxAccounts)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: Material(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(18),
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 8,
-                            ),
-                            leading: const CircleAvatar(
-                              backgroundColor: Color(0xFFE2F4EF),
-                              foregroundColor: Color(0xFF16866C),
-                              child: Icon(Icons.mail_outline_rounded),
-                            ),
-                            title: Text(
-                              _emailAddressFromAccount(account) ?? account,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
+                    const SizedBox(height: 6),
+                    const Text(
+                      'YDI analysiert nur die notwendigen Metadaten und speichert die Ergebnisse lokal.',
+                      style: TextStyle(color: Color(0xFF788399)),
+                    ),
+                    const SizedBox(height: 22),
+                    _EmailProviderCard(
+                      icon: Icons.g_mobiledata_rounded,
+                      color: const Color(0xFF526DFF),
+                      title: 'Google / Gmail',
+                      subtitle: gmailAccounts == 0
+                          ? 'Noch kein Konto analysiert'
+                          : '$gmailAccounts Konto${gmailAccounts == 1 ? '' : 'en'} verbunden',
+                      status: gmailAccounts == 0 ? 'Einrichten' : 'Verwalten',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const GoogleAccountsPage(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _EmailProviderCard(
+                      icon: Icons.mail_outline_rounded,
+                      color: const Color(0xFF29A583),
+                      title: 'GMX',
+                      subtitle: gmxAccounts.isEmpty
+                          ? 'Noch kein Konto verbunden'
+                          : '${gmxAccounts.length} Konto${gmxAccounts.length == 1 ? '' : 'en'} lokal erfasst',
+                      status: gmxAccounts.isEmpty ? 'Einrichten' : 'Hinzufügen',
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const GmxSetupPage()),
+                      ),
+                    ),
+                    if (gmxAccounts.isNotEmpty) ...[
+                      const SizedBox(height: 18),
+                      const Text(
+                        'Verbundene GMX-Konten',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      for (final account in gmxAccounts)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Material(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(18),
+                            child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 18,
+                                vertical: 8,
                               ),
-                            ),
-                            subtitle: Text(_lastScanLabel(account)),
-                            trailing: IconButton(
-                              tooltip: 'Konto entfernen',
-                              onPressed: () => _removeAccount(context, account),
-                              icon: const Icon(Icons.delete_outline_rounded),
+                              leading: const CircleAvatar(
+                                backgroundColor: Color(0xFFE2F4EF),
+                                foregroundColor: Color(0xFF16866C),
+                                child: Icon(Icons.mail_outline_rounded),
+                              ),
+                              title: Text(
+                                account.email,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              subtitle: Text(_lastScanLabel(account)),
+                              onTap: () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      GmxSetupPage(initialEmail: account.email),
+                                ),
+                              ),
+                              trailing: IconButton(
+                                tooltip: 'Konto entfernen',
+                                onPressed: () =>
+                                    _removeAccount(context, account),
+                                icon: const Icon(Icons.delete_outline_rounded),
+                              ),
                             ),
                           ),
                         ),
-                      ),
+                    ],
                   ],
-                ],
-              );
-            },
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -1806,11 +1823,15 @@ class GmxSetupPage extends StatefulWidget {
     super.key,
     this.initialEmail,
     this.scanner,
+    this.accountStore,
+    this.credentialManager,
     this.realGmxTestAllowed = isRealGmxTestEnabled,
   });
 
   final String? initialEmail;
   final GmxImapScanner? scanner;
+  final GmxAccountStore? accountStore;
+  final GmxCredentialManager? credentialManager;
   final bool realGmxTestAllowed;
 
   @override
@@ -1823,11 +1844,18 @@ class _GmxSetupPageState extends State<GmxSetupPage>
   late final TextEditingController _emailController;
   final _passwordController = TextEditingController();
   bool _hidePassword = true;
+  bool _savePasswordFor30Days = false;
+  bool _credentialAvailable = false;
   bool _busy = false;
   int _current = 0;
   int _total = 0;
   String? _message;
   bool _success = false;
+
+  GmxAccountStore get _accountStore => widget.accountStore ?? gmxAccountStore;
+
+  GmxCredentialManager get _credentialManager =>
+      widget.credentialManager ?? gmxCredentialManager;
 
   String get _connectionDescription {
     if (kIsWeb) {
@@ -1836,8 +1864,8 @@ class _GmxSetupPageState extends State<GmxSetupPage>
           'aktiviert.';
     }
     if (widget.realGmxTestAllowed) {
-      return 'Privater Memory-only-Test: YDI verbindet sich direkt und '
-          'verschlüsselt mit GMX. Die Ergebnisse bleiben nur bis zum nächsten '
+      return 'YDI verbindet sich direkt und verschlüsselt mit GMX. Das Konto '
+          'bleibt lokal sichtbar; Scanergebnisse bleiben nur bis zum nächsten '
           'App-Neustart im Arbeitsspeicher.';
     }
     return 'YDI verbindet sich nur in einem ausdrücklich freigegebenen '
@@ -1849,6 +1877,9 @@ class _GmxSetupPageState extends State<GmxSetupPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _emailController = TextEditingController(text: widget.initialEmail ?? '');
+    final account = _accountStore.findByEmail(_emailController.text);
+    _credentialAvailable = account?.credentialAvailable ?? false;
+    _savePasswordFor30Days = _credentialAvailable;
   }
 
   @override
@@ -1867,22 +1898,30 @@ class _GmxSetupPageState extends State<GmxSetupPage>
     }
   }
 
+  void _emailChanged(String value) {
+    final account = _accountStore.findByEmail(value);
+    final available = account?.credentialAvailable ?? false;
+    if (available == _credentialAvailable &&
+        available == _savePasswordFor30Days) {
+      return;
+    }
+    setState(() {
+      _credentialAvailable = available;
+      _savePasswordFor30Days = available;
+    });
+  }
+
   Future<void> _testConnection() async {
     if (!(_formKey.currentState?.validate() ?? false)) {
       _passwordController.clear();
       return;
     }
-    await _run(() async {
-      await (widget.scanner ?? gmxImapScanner).testConnection(
-        _emailController.text,
-        _passwordController.text,
-      );
-      if (!mounted) return;
-      setState(() {
-        _success = true;
-        _message = 'Verbindung erfolgreich. Du kannst die Analyse starten.';
-      });
-    });
+    await _run(
+      operation: (password) => (widget.scanner ?? gmxImapScanner)
+          .testConnection(_emailController.text, password),
+      markScanned: false,
+      successMessage: 'Verbindung erfolgreich. Du kannst die Analyse starten.',
+    );
   }
 
   Future<void> _scan() async {
@@ -1890,35 +1929,75 @@ class _GmxSetupPageState extends State<GmxSetupPage>
       _passwordController.clear();
       return;
     }
-    await _run(() async {
-      await (widget.scanner ?? gmxImapScanner).scanAndSave(
-        _emailController.text,
-        _passwordController.text,
-        onProgress: (current, total) {
-          if (!mounted) return;
-          setState(() {
-            _current = current;
-            _total = total;
-            _message = '$current von $total Metadaten analysiert';
-          });
-        },
-      );
-      if (!mounted) return;
-      setState(() {
-        _success = true;
-        _message = 'Analyse abgeschlossen. Das Passwort wurde verworfen.';
-      });
-    });
+    await _run(
+      operation: (password) async {
+        await (widget.scanner ?? gmxImapScanner).scanAndSave(
+          _emailController.text,
+          password,
+          onProgress: (current, total) {
+            if (!mounted) return;
+            setState(() {
+              _current = current;
+              _total = total;
+              _message = '$current von $total Metadaten analysiert';
+            });
+          },
+        );
+      },
+      markScanned: true,
+      successMessage:
+          'Analyse abgeschlossen. Die Ergebnisse bleiben nur in dieser Sitzung.',
+    );
   }
 
-  Future<void> _run(Future<void> Function() operation) async {
+  Future<void> _run({
+    required Future<void> Function(String password) operation,
+    required bool markScanned,
+    required String successMessage,
+  }) async {
     setState(() {
       _busy = true;
       _success = false;
       _message = 'Verschlüsselte Verbindung wird hergestellt …';
     });
     try {
-      await operation();
+      final typedPassword = _passwordController.text;
+      final existing = _accountStore.findByEmail(_emailController.text);
+      final usedStoredCredential = typedPassword.isEmpty;
+      final password = usedStoredCredential && existing != null
+          ? await _credentialManager.readValid(existing)
+          : typedPassword;
+      if (password == null || password.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _credentialAvailable = false;
+          _savePasswordFor30Days = false;
+          _message = 'Bitte gib dein Anwendungspasswort erneut ein.';
+        });
+        return;
+      }
+
+      await operation(password);
+      var account = await _accountStore.ensureAccount(_emailController.text);
+      if (markScanned) {
+        account = await _accountStore.markScanned(
+          account.accountId,
+          DateTime.now(),
+        );
+      }
+      if (_savePasswordFor30Days) {
+        if (!usedStoredCredential) {
+          await _credentialManager.saveFor30Days(account, password);
+        }
+      } else {
+        await _credentialManager.remove(account);
+      }
+      if (!mounted) return;
+      setState(() {
+        _credentialAvailable = _savePasswordFor30Days;
+        _success = true;
+        _message = successMessage;
+      });
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -1930,6 +2009,30 @@ class _GmxSetupPageState extends State<GmxSetupPage>
         _passwordController.clear();
         setState(() => _busy = false);
       }
+    }
+  }
+
+  Future<void> _removeStoredPassword() async {
+    final account = _accountStore.findByEmail(_emailController.text);
+    if (account == null) return;
+    setState(() => _busy = true);
+    try {
+      await _credentialManager.remove(account);
+      if (!mounted) return;
+      setState(() {
+        _credentialAvailable = false;
+        _savePasswordFor30Days = false;
+        _success = true;
+        _message = 'Das gespeicherte Passwort wurde entfernt.';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _success = false;
+        _message = 'Das gespeicherte Passwort konnte nicht entfernt werden.';
+      });
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -2014,7 +2117,12 @@ class _GmxSetupPageState extends State<GmxSetupPage>
                       TextFormField(
                         controller: _emailController,
                         enabled: !_busy,
+                        onChanged: _emailChanged,
                         keyboardType: TextInputType.emailAddress,
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        textCapitalization: TextCapitalization.none,
+                        autofillHints: const [AutofillHints.email],
                         decoration: const InputDecoration(
                           labelText: 'GMX-E-Mail-Adresse',
                           prefixIcon: Icon(Icons.alternate_email_rounded),
@@ -2034,9 +2142,12 @@ class _GmxSetupPageState extends State<GmxSetupPage>
                       TextFormField(
                         controller: _passwordController,
                         enabled: !_busy,
+                        keyboardType: TextInputType.visiblePassword,
                         obscureText: _hidePassword,
                         autocorrect: false,
                         enableSuggestions: false,
+                        textCapitalization: TextCapitalization.none,
+                        autofillHints: const <String>[],
                         decoration: InputDecoration(
                           labelText: 'Anwendungspasswort',
                           prefixIcon: const Icon(Icons.lock_outline_rounded),
@@ -2053,16 +2164,44 @@ class _GmxSetupPageState extends State<GmxSetupPage>
                           fillColor: Colors.white,
                           border: const OutlineInputBorder(),
                         ),
-                        validator: (value) => value == null || value.isEmpty
+                        validator: (value) =>
+                            (value == null || value.isEmpty) &&
+                                !_credentialAvailable
                             ? 'Bitte gib dein Anwendungspasswort ein.'
                             : null,
                       ),
                       const SizedBox(height: 10),
-                      const Text(
-                        'Das Passwort bleibt nur während dieser Verbindung im Arbeitsspeicher und wird nicht gespeichert.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Color(0xFF657086)),
+                      CheckboxListTile(
+                        value: _savePasswordFor30Days,
+                        onChanged: _busy
+                            ? null
+                            : (value) => setState(
+                                () => _savePasswordFor30Days = value ?? false,
+                              ),
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: const Text(
+                          'Passwort 30 Tage sicher speichern',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        subtitle: Text(
+                          _credentialAvailable
+                              ? 'Ein gültiges Passwort ist im sicheren Plattformspeicher verfügbar.'
+                              : 'Ohne Auswahl wird das Passwort nach dem Versuch verworfen.',
+                        ),
                       ),
+                      if (_credentialAvailable) ...[
+                        TextButton.icon(
+                          onPressed: _busy ? null : _removeStoredPassword,
+                          icon: const Icon(Icons.key_off_outlined),
+                          label: const Text('Gespeichertes Passwort entfernen'),
+                        ),
+                        const Text(
+                          'Dein GMX-Passwort wird dadurch nicht geändert.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Color(0xFF657086)),
+                        ),
+                      ],
                       if (_busy) ...[
                         const SizedBox(height: 16),
                         LinearProgressIndicator(

@@ -1,6 +1,6 @@
 # YDI Decision Log
 
-Stand: 22. August 2026
+Stand: 30. August 2026
 
 ## Entwicklungsgeräte
 
@@ -75,13 +75,22 @@ Stand: 22. August 2026
 - **D033:** Dienstelisten bieten Filter nach Konto und Kategorie sowie alphabetische Sortierung und Sortierung nach Kategorie.
 - **D034:** Sicherheitshinweise werden erst prominent gezeigt, wenn die Erkennung fachlich ausreichend zuverlässig und für Nutzer verständlich erklärt ist.
 - **D035:** Native Windows-Unterstützung wird über Visual Studio „Desktopentwicklung mit C++“ eingerichtet; die veraltete Visual-Studio-Workload „Mobileentwicklung mit C++“ wird nicht verwendet.
-- **D036:** GMX-Anwendungspasswörter werden nicht dauerhaft gespeichert. Nach Test oder Scan wird das Eingabefeld geleert.
+- **D036:** GMX-Anwendungspasswörter werden ohne eine ausdrückliche
+  Speicherentscheidung nicht dauerhaft gespeichert. Nach Test oder Scan wird
+  das Eingabefeld immer geleert.
 - **D037:** Einzelnes Entfernen eines Kontos löscht nur dessen lokale Scanergebnisse; die globale Löschfunktion wird ausdrücklich als Löschung aller lokalen Scandaten bezeichnet.
 - **D038:** Echte Newsletter-Abmelde-URLs dürfen lokal gespeichert werden, verlassen das Gerät nicht und werden ausschließlich auf ausdrückliche Nutzeraktion geöffnet.
 - **D039:** Ein bloßer Hinweis auf einen vorhandenen Abmeldelink reicht nicht zum Öffnen. Ohne lokal gespeicherte, gültige HTTP(S)-URL bleibt der Button deaktiviert.
 - **D040:** RFC-8058-One-Click-Endpunkte erwarten einen POST-Aufruf. YDI öffnet sie
   nicht als normale GET-Webseite und sendet ohne eine spätere, ausdrücklich
   beschlossene Bestätigungsfunktion keine Abmeldeanfrage.
+- **D047:** Persistent GMX Account v1 speichert ausschließlich freigegebene
+  Kontometadaten in SharedPreferences. Optional ausgewählte Passwörter und ihr
+  Speicherzeitpunkt liegen maximal 30 Tage im sicheren Plattformspeicher (auf
+  iOS im Keychain, gerätegebunden und nicht iCloud-synchronisiert). Echte
+  Scanresultate und tokenhaltige `List-Unsubscribe`-URLs bleiben für diesen
+  Meilenstein Memory-only. Public-Demo-Builds dürfen weder echte GMX-Konten noch
+  Credentials laden oder schreiben.
 
 ## Beispielkategorien und Alias-Zuordnungen
 

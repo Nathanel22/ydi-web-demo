@@ -1,6 +1,35 @@
 # YDI Projektstatus
 
-Stand: 22. August 2026
+Stand: 30. August 2026
+
+## Persistent GMX Account v1 (30.08.2026)
+
+- Ein erfolgreich verbundenes GMX-Konto wird mit interner ID, Provider,
+  vollständiger E-Mail-Adresse, letztem erfolgreichen Scanzeitpunkt und dem
+  Status eines verfügbaren Credentials lokal registriert.
+- GMX-Passwörter sind ausdrücklich nicht Teil des Account-Modells oder eines
+  SharedPreferences-Datensatzes. Ohne aktive Auswahl werden sie nach jedem
+  Versuch wie bisher verworfen.
+- Die sichtbare Option `Passwort 30 Tage sicher speichern` legt Passwort und
+  Speicherzeitpunkt ausschließlich im sicheren Plattformspeicher ab; auf iOS
+  wird dafür der Keychain verwendet. Nach mehr als 30 Tagen wird das Credential
+  entfernt, das Konto bleibt bestehen.
+- Echte GMX-Scanresultate einschließlich möglicher tokenhaltiger
+  `List-Unsubscribe`-URLs bleiben in diesem iOS-Meilenstein weiterhin
+  Memory-only und verschwinden beim App-Neustart.
+- Eventuell vorhandene ältere Scan-Datensätze mit der Quelle `gmx-imap:` werden
+  beim Laden aus der allgemeinen SharedPreferences-Persistenz entfernt; auch
+  spätere allgemeine Speichervorgänge filtern diesen Quelltyp defensiv aus.
+- Das Entfernen eines GMX-Kontos löscht Kontometadaten, sitzungsbezogene
+  Scanresultate und Secure-Storage-Credentials.
+- Public-Demo-Builds bleiben fail-closed und verwenden ausschließlich
+  synthetische Daten.
+- Die GMX-E-Mail- und Passwortfelder sind für mobile Eingabe ohne Autokorrektur,
+  Vorschläge oder automatische Großschreibung konfiguriert. Passwort-Autofill
+  außerhalb des vorgesehenen Secure-Storage-Flows ist deaktiviert.
+- Die abschließende Dependency-Auflösung sowie `flutter analyze` und
+  `flutter test` müssen nach dem isolationsbedingten Dart-VM-Abbruch noch im
+  normalen Mac-Terminal bestätigt werden.
 
 ## Dual-System-Entwicklung (10.08.2026)
 

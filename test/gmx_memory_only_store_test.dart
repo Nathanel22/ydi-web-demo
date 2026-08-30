@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ydi_app/data/scan_data_store.dart';
@@ -55,4 +57,37 @@ void main() {
     expect(persistedText, isNot(contains('private-token')));
     expect(scanDataNotifier.value?.accounts, contains(account));
   });
+
+  test(
+    'Alte direkt persistierte GMX-Scans werden beim Laden entfernt',
+    () async {
+      const account = 'GMX · private-test@example.com';
+      const tokenUrl = 'https://example.com/unsubscribe/legacy-token';
+      final preferences = _MemoryPreferences();
+      preferences.values['ydi_local_scan_dataset_v1'] = jsonEncode(
+        ScanDataset(
+          services: const [
+            ServiceItem(
+              id: 'synthetic_service',
+              name: 'Synthetic Service',
+              categoryId: ServiceCategory.shopping,
+              mailCounts: {account: 1},
+              color: Colors.blue,
+              monogram: 'SS',
+              domains: ['example.com'],
+              unsubscribeByAccount: {account: true},
+              unsubscribeUrlsByAccount: {account: tokenUrl},
+            ),
+          ],
+          sourceFiles: const ['gmx-imap:$account'],
+        ).toJson(),
+      );
+      final store = ScanDataStore(preferences: preferences);
+
+      await store.load();
+
+      expect(preferences.values, isEmpty);
+      expect(scanDataNotifier.value, isNull);
+    },
+  );
 }

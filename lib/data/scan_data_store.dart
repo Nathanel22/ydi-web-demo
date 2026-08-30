@@ -53,11 +53,19 @@ class ScanDataStore {
       final normalized = ServiceCatalog.normalizeDataset(
         ScanDataset.fromJson(json),
       );
-      scanDataNotifier.value = normalized;
-      await _preferences.setString(
-        _storageKey,
-        jsonEncode(normalized.toJson()),
+      final migrated = normalized.withoutAccounts(
+        _directGmxAccounts(normalized),
       );
+      final isEmpty = migrated.services.isEmpty && migrated.sourceFiles.isEmpty;
+      scanDataNotifier.value = isEmpty ? null : migrated;
+      if (isEmpty) {
+        await _preferences.remove(_storageKey);
+      } else {
+        await _preferences.setString(
+          _storageKey,
+          jsonEncode(migrated.toJson()),
+        );
+      }
     } on FormatException {
       await clear();
     } on TypeError {
@@ -67,7 +75,10 @@ class ScanDataStore {
 
   Future<void> save(ScanDataset dataset) async {
     final normalized = ServiceCatalog.normalizeDataset(dataset);
-    final persistent = normalized.withoutAccounts(_memoryOnlyAccounts);
+    final persistent = normalized.withoutAccounts({
+      ..._memoryOnlyAccounts,
+      ..._directGmxAccounts(normalized),
+    });
     if (persistent.services.isEmpty && persistent.sourceFiles.isEmpty) {
       await _preferences.remove(_storageKey);
     } else {
@@ -110,4 +121,10 @@ class ScanDataStore {
     }
     await accountScanStore.remove(account);
   }
+
+  Set<String> _directGmxAccounts(ScanDataset dataset) => dataset.sourceFiles
+      .where((source) => source.toLowerCase().startsWith('gmx-imap:'))
+      .map((source) => source.substring('gmx-imap:'.length))
+      .where((account) => account.isNotEmpty)
+      .toSet();
 }

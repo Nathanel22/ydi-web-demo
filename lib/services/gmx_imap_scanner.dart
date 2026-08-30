@@ -96,7 +96,10 @@ class GmxImapScanner {
     }
   }
 
-  ScanDataset _replaceAccount(String account, List<ServiceItem> services) {
+  Future<ScanDataset> _replaceAccount(
+    String account,
+    List<ServiceItem> services,
+  ) async {
     final incoming = ScanDataset(
       services: services,
       sourceFiles: ['gmx-imap:$account'],
@@ -113,7 +116,7 @@ class GmxImapScanner {
     final complete = current == null
         ? incoming
         : current.withoutAccounts(labelsToReplace).mergedWith(incoming);
-    return scanDataStore.setMemoryOnlyDataset(account, complete);
+    return scanDataStore.saveGmxDataset(account, complete);
   }
 
   void _aggregate(

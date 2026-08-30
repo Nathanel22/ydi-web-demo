@@ -1936,8 +1936,8 @@ class _GmxSetupPageState extends State<GmxSetupPage>
     }
     if (widget.realGmxTestAllowed) {
       return 'YDI verbindet sich direkt und verschlüsselt mit GMX. Das Konto '
-          'bleibt lokal sichtbar; Scanergebnisse bleiben nur bis zum nächsten '
-          'App-Neustart im Arbeitsspeicher.';
+          'und die verschlüsselten Analyseergebnisse bleiben lokal auf diesem '
+          'Gerät verfügbar.';
     }
     return 'YDI verbindet sich nur in einem ausdrücklich freigegebenen '
         'privaten Test-Build mit GMX.';
@@ -2017,7 +2017,7 @@ class _GmxSetupPageState extends State<GmxSetupPage>
       },
       markScanned: true,
       successMessage:
-          'Analyse abgeschlossen. Die Ergebnisse bleiben nur in dieser Sitzung.',
+          'Analyse abgeschlossen. Die Ergebnisse wurden lokal verschlüsselt gespeichert.',
     );
   }
 

@@ -8,7 +8,10 @@ import 'package:ydi_app/services/gmx_credential_manager.dart';
 import 'package:ydi_app/services/gmx_imap_scanner.dart';
 
 class _MemoryPreferences implements GmxAccountPreferences {
-  final Map<String, String> values = {};
+  _MemoryPreferences([Map<String, String>? values])
+    : values = values ?? <String, String>{};
+
+  final Map<String, String> values;
 
   @override
   Future<String?> getString(String key) async => values[key];
@@ -25,7 +28,10 @@ class _MemoryPreferences implements GmxAccountPreferences {
 }
 
 class _MemorySecureStorage implements GmxSecureStorage {
-  final Map<String, String> values = {};
+  _MemorySecureStorage([Map<String, String>? values])
+    : values = values ?? <String, String>{};
+
+  final Map<String, String> values;
 
   @override
   Future<String?> read(String key) async => values[key];
@@ -58,8 +64,11 @@ class _FakeGmxScanner extends GmxImapScanner {
     String email,
     String password, {
     required void Function(int current, int total) onProgress,
-  }) {
-    throw UnimplementedError();
+  }) async {
+    receivedPassword = password;
+    if (shouldFail) throw StateError('Synthetic scan failure.');
+    onProgress(1, 1);
+    return const ScanDataset(services: [], sourceFiles: []);
   }
 }
 
@@ -69,12 +78,12 @@ void main() {
     GmxCredentialManager credentialManager,
     _MemorySecureStorage secureStorage,
   })
-  persistence() {
+  persistenceWithNow(DateTime Function() now) {
     final accountStore = GmxAccountStore(
       preferences: _MemoryPreferences(),
       notifier: ValueNotifier<List<GmxAccount>>(const []),
       publicDemo: false,
-      now: () => DateTime.utc(2026, 8, 1),
+      now: now,
       randomIdPart: () => 42,
     );
     final secureStorage = _MemorySecureStorage();
@@ -83,11 +92,18 @@ void main() {
       credentialManager: GmxCredentialManager(
         accountStore: accountStore,
         secureStorage: secureStorage,
-        now: () => DateTime.utc(2026, 8, 1),
+        now: now,
       ),
       secureStorage: secureStorage,
     );
   }
+
+  ({
+    GmxAccountStore accountStore,
+    GmxCredentialManager credentialManager,
+    _MemorySecureStorage secureStorage,
+  })
+  persistence() => persistenceWithNow(() => DateTime.utc(2026, 8, 1));
 
   Future<void> pumpPage(
     WidgetTester tester,
@@ -219,6 +235,87 @@ void main() {
 
     expect(scanner.receivedPassword, 'synthetic-password');
     expect(passwordValue(tester), isEmpty);
+  });
+
+  testWidgets(
+    'Credential unter 30 Tagen erlaubt Sync nach simuliertem Neustart',
+    (tester) async {
+      final preferenceValues = <String, String>{};
+      final keychainValues = <String, String>{};
+      final firstAccountStore = GmxAccountStore(
+        preferences: _MemoryPreferences(preferenceValues),
+        notifier: ValueNotifier<List<GmxAccount>>(const []),
+        publicDemo: false,
+        now: () => DateTime.utc(2026, 8, 1),
+        randomIdPart: () => 42,
+      );
+      final firstManager = GmxCredentialManager(
+        accountStore: firstAccountStore,
+        secureStorage: _MemorySecureStorage(keychainValues),
+        now: () => DateTime.utc(2026, 8, 1),
+      );
+      final firstAccount = await firstAccountStore.ensureAccount(
+        'private-test@example.com',
+      );
+      await firstManager.saveFor30Days(firstAccount, 'synthetic-password');
+
+      final restartedAccountStore = GmxAccountStore(
+        preferences: _MemoryPreferences(preferenceValues),
+        notifier: ValueNotifier<List<GmxAccount>>(const []),
+        publicDemo: false,
+      );
+      await restartedAccountStore.load();
+      final restartedManager = GmxCredentialManager(
+        accountStore: restartedAccountStore,
+        secureStorage: _MemorySecureStorage(keychainValues),
+        now: () => DateTime.utc(2026, 8, 2),
+      );
+      await restartedManager.discardExpiredCredentials();
+      final scanner = _FakeGmxScanner(shouldFail: false);
+      final stores = (
+        accountStore: restartedAccountStore,
+        credentialManager: restartedManager,
+        secureStorage: _MemorySecureStorage(keychainValues),
+      );
+      await pumpPage(
+        tester,
+        scanner,
+        stores,
+        initialEmail: restartedAccountStore.accounts.single.email,
+      );
+
+      await tester.ensureVisible(find.text('Analyse starten'));
+      await tester.tap(find.text('Analyse starten'));
+      await tester.pumpAndSettle();
+
+      expect(scanner.receivedPassword, 'synthetic-password');
+      expect(find.text('Bitte gib dein Anwendungspasswort ein.'), findsNothing);
+      expect(passwordValue(tester), isEmpty);
+    },
+  );
+
+  testWidgets('Credential über 30 Tagen erfordert Passwort, Konto bleibt', (
+    tester,
+  ) async {
+    var now = DateTime.utc(2026, 8, 1);
+    final stores = persistenceWithNow(() => now);
+    final account = await stores.accountStore.ensureAccount(
+      'private-test@example.com',
+    );
+    await stores.credentialManager.saveFor30Days(account, 'synthetic-password');
+    now = DateTime.utc(2026, 9, 1, 0, 0, 1);
+    await stores.credentialManager.discardExpiredCredentials();
+    final scanner = _FakeGmxScanner(shouldFail: false);
+    await pumpPage(tester, scanner, stores, initialEmail: account.email);
+
+    await tester.ensureVisible(find.text('Analyse starten'));
+    await tester.tap(find.text('Analyse starten'));
+    await tester.pumpAndSettle();
+
+    expect(scanner.receivedPassword, isNull);
+    expect(find.text('Bitte gib dein Anwendungspasswort ein.'), findsOneWidget);
+    expect(stores.accountStore.accounts, hasLength(1));
+    expect(stores.accountStore.accounts.single.credentialAvailable, isFalse);
   });
 
   testWidgets('Fehlendes gespeichertes Passwort erfordert erneute Eingabe', (

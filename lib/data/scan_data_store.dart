@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/public_demo.dart';
 import '../models/scan_dataset.dart';
+import '../models/gmx_sync_state.dart';
 import '../services/gmx_credential_manager.dart';
 import 'service_catalog.dart';
 import 'account_scan_store.dart';
@@ -118,19 +119,33 @@ class ScanDataStore {
 
   Future<ScanDataset> saveGmxDataset(
     String account,
-    ScanDataset dataset,
-  ) async {
+    ScanDataset dataset, {
+    GmxSyncState? syncState,
+  }) async {
     _ensureRealPersistenceAllowed();
     final normalized = ServiceCatalog.normalizeDataset(dataset);
     if (!_directGmxAccounts(normalized).contains(account)) {
       throw ArgumentError('GMX scan source does not match the account.');
     }
-    await _savePersistentParts(normalized);
+    await _savePersistentParts(
+      normalized,
+      gmxAccount: account,
+      syncState: syncState,
+    );
     notifier.value = normalized;
     return normalized;
   }
 
-  Future<void> _savePersistentParts(ScanDataset normalized) async {
+  Future<GmxSyncState?> loadGmxSyncState(String account) async {
+    _ensureRealPersistenceAllowed();
+    return _gmxPersistence.loadSyncState(account);
+  }
+
+  Future<void> _savePersistentParts(
+    ScanDataset normalized, {
+    String? gmxAccount,
+    GmxSyncState? syncState,
+  }) async {
     final persistent = _withoutDirectGmx(normalized);
     final encryptedGmx = _onlyDirectGmx(normalized);
     if (_isEmpty(persistent)) {
@@ -141,7 +156,17 @@ class ScanDataStore {
         jsonEncode(persistent.toJson()),
       );
     }
-    await _gmxPersistence.save(_isEmpty(encryptedGmx) ? null : encryptedGmx);
+    if (_isEmpty(encryptedGmx)) {
+      await _gmxPersistence.save(null);
+    } else if (gmxAccount != null && syncState != null) {
+      await _gmxPersistence.saveWithSyncState(
+        encryptedGmx,
+        gmxAccount,
+        syncState,
+      );
+    } else {
+      await _gmxPersistence.save(encryptedGmx);
+    }
   }
 
   Future<void> clear() async {

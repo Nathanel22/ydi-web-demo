@@ -5,6 +5,7 @@ import '../config/public_demo.dart';
 import '../data/scan_data_store.dart';
 import '../data/service_catalog.dart';
 import '../models/scan_dataset.dart';
+import '../models/gmx_sync_state.dart';
 import '../models/service_category.dart';
 import '../models/service_item.dart';
 
@@ -14,26 +15,35 @@ class GmxImapScanner {
   GmxImapScanner({
     RealGmxAccessPolicy accessPolicy = realGmxAccessPolicy,
     ImapClient Function()? clientFactory,
+    GmxImapSession Function()? sessionFactory,
+    this.dataStore,
   }) : _accessPolicy = accessPolicy,
-       _clientFactory = clientFactory;
+       _sessionFactory =
+           sessionFactory ??
+           (() => EnoughMailGmxImapSession(
+             clientFactory?.call() ?? _createClient(),
+           ));
 
-  static const maximumMessages = 50;
+  static const maximumMessages = 5000;
+  static const chunkSize = 250;
   static const headerFetchCriteria =
-      'BODY.PEEK[HEADER.FIELDS (FROM SUBJECT LIST-UNSUBSCRIBE '
-      'LIST-UNSUBSCRIBE-POST LIST-ID)]';
+      '(UID BODY.PEEK[HEADER.FIELDS (FROM SUBJECT LIST-UNSUBSCRIBE '
+      'LIST-UNSUBSCRIBE-POST LIST-ID)])';
 
   final RealGmxAccessPolicy _accessPolicy;
-  final ImapClient Function()? _clientFactory;
+  final GmxImapSession Function() _sessionFactory;
+  final ScanDataStore? dataStore;
+
+  ScanDataStore get _store => dataStore ?? scanDataStore;
 
   Future<void> testConnection(String email, String password) async {
     _accessPolicy.ensureAllowed();
-    final client = _client();
+    final session = _sessionFactory();
     try {
-      await client.connectToServer('imap.gmx.net', 993, isSecure: true);
-      await client.login(email.trim(), password);
-      await client.selectInbox();
+      await session.connect(email.trim(), password);
+      await session.selectInbox();
     } finally {
-      await _close(client);
+      await session.close();
     }
   }
 
@@ -41,70 +51,129 @@ class GmxImapScanner {
     String email,
     String password, {
     required void Function(int current, int total) onProgress,
+    bool Function()? isCancelled,
   }) async {
     _accessPolicy.ensureAllowed();
     final normalizedEmail = email.trim().toLowerCase();
     final account = 'GMX · $normalizedEmail';
-    final client = _client();
+    final session = _sessionFactory();
     try {
-      await client.connectToServer('imap.gmx.net', 993, isSecure: true);
-      await client.login(normalizedEmail, password);
-      final mailbox = await client.selectInbox();
-      final total = mailbox.messagesExists;
-      final count = total > maximumMessages ? maximumMessages : total;
-      if (count == 0) {
+      await session.connect(normalizedEmail, password);
+      final mailbox = await session.selectInbox();
+      _throwIfCancelled(isCancelled);
+
+      final previousState = await _store.loadGmxSyncState(account);
+      final canIncrement =
+          previousState != null &&
+          mailbox.uidValidity != null &&
+          previousState.uidValidity == mailbox.uidValidity;
+      final eligibleUids = canIncrement
+          ? ((await session.searchUids(
+                  afterUid: previousState.lastProcessedUid,
+                )).toSet().toList()..sort())
+                .where((uid) => uid > previousState.lastProcessedUid)
+                .take(maximumMessages)
+                .toList(growable: false)
+          : const <int>[];
+      final total = canIncrement
+          ? eligibleUids.length
+          : mailbox.messagesExists > maximumMessages
+          ? maximumMessages
+          : mailbox.messagesExists;
+      if (total == 0) {
         onProgress(0, 0);
-        return _replaceAccount(account, const []);
+        if (canIncrement) {
+          return _store.notifier.value ??
+              const ScanDataset(services: [], sourceFiles: []);
+        }
+        return _commitAccount(
+          account,
+          const [],
+          mailbox.uidValidity == null
+              ? null
+              : GmxSyncState(
+                  uidValidity: mailbox.uidValidity!,
+                  lastProcessedUid: 0,
+                ),
+        );
       }
 
-      final result = await client.fetchRecentMessages(
-        messageCount: count,
-        criteria: headerFetchCriteria,
-      );
-      final knownServices = scanDataNotifier.value?.services ?? const [];
+      final knownServices = _store.notifier.value?.services ?? const [];
       final aggregated = <String, _GmxService>{};
-      var processed = 0;
-      for (final message in result.messages) {
-        _aggregate(message, account, knownServices, aggregated);
-        processed++;
-        if (processed % 20 == 0 || processed == result.messages.length) {
-          onProgress(processed, count);
+      if (canIncrement) {
+        for (final service in knownServices) {
+          if (service.accounts.contains(account)) {
+            aggregated[service.id] = _GmxService.fromService(service, account);
+          }
         }
       }
-      return _replaceAccount(
+      var processed = 0;
+      int? highestFetchedUid;
+      for (var offset = 0; offset < total; offset += chunkSize) {
+        _throwIfCancelled(isCancelled);
+        final end = offset + chunkSize < total ? offset + chunkSize : total;
+        final messages = canIncrement
+            ? await session.fetchUids(
+                eligibleUids.sublist(offset, end),
+                criteria: headerFetchCriteria,
+              )
+            : await session.fetchSequenceRange(
+                mailbox.messagesExists - total + offset + 1,
+                mailbox.messagesExists - total + end,
+                criteria: headerFetchCriteria,
+              );
+        _throwIfCancelled(isCancelled);
+        var messagesInChunk = 0;
+        for (final message in messages) {
+          _aggregate(message, account, knownServices, aggregated);
+          final uid = message.uid;
+          if (uid != null &&
+              (highestFetchedUid == null || uid > highestFetchedUid)) {
+            highestFetchedUid = uid;
+          }
+          messagesInChunk++;
+          if (messagesInChunk % 20 == 0) {
+            onProgress(offset + messagesInChunk, total);
+          }
+        }
+        processed = end;
+        onProgress(processed, total);
+      }
+
+      return _commitAccount(
         account,
         aggregated.values.map((value) => value.build()).toList(),
+        mailbox.uidValidity == null ||
+                (!canIncrement && highestFetchedUid == null)
+            ? null
+            : GmxSyncState(
+                uidValidity: mailbox.uidValidity!,
+                lastProcessedUid: canIncrement
+                    ? eligibleUids.last
+                    : highestFetchedUid!,
+              ),
       );
     } finally {
-      await _close(client);
+      await session.close();
     }
   }
 
-  ImapClient _client() =>
-      _clientFactory?.call() ??
-      ImapClient(
-        isLogEnabled: false,
-        defaultWriteTimeout: const Duration(seconds: 20),
-        defaultResponseTimeout: const Duration(seconds: 30),
-      );
+  static ImapClient _createClient() => ImapClient(
+    isLogEnabled: false,
+    defaultWriteTimeout: const Duration(seconds: 20),
+    defaultResponseTimeout: const Duration(seconds: 30),
+  );
 
-  Future<void> _close(ImapClient client) async {
-    try {
-      if (client.isLoggedIn) await client.logout();
-    } catch (_) {
-      // The socket may already be closed after a failed login.
-    }
-  }
-
-  Future<ScanDataset> _replaceAccount(
+  Future<ScanDataset> _commitAccount(
     String account,
     List<ServiceItem> services,
+    GmxSyncState? syncState,
   ) async {
     final incoming = ScanDataset(
       services: services,
       sourceFiles: ['gmx-imap:$account'],
     );
-    final current = scanDataNotifier.value;
+    final current = _store.notifier.value;
     final labelsToReplace = {
       account,
       ...?current?.accounts.where(
@@ -116,7 +185,11 @@ class GmxImapScanner {
     final complete = current == null
         ? incoming
         : current.withoutAccounts(labelsToReplace).mergedWith(incoming);
-    return scanDataStore.saveGmxDataset(account, complete);
+    return _store.saveGmxDataset(account, complete, syncState: syncState);
+  }
+
+  void _throwIfCancelled(bool Function()? isCancelled) {
+    if (isCancelled?.call() == true) throw const GmxScanCancelledException();
   }
 
   void _aggregate(
@@ -252,6 +325,105 @@ class GmxImapScanner {
   ];
 }
 
+class GmxMailboxSnapshot {
+  const GmxMailboxSnapshot({
+    required this.messagesExists,
+    required this.uidValidity,
+  });
+
+  final int messagesExists;
+  final int? uidValidity;
+}
+
+abstract interface class GmxImapSession {
+  Future<void> connect(String email, String password);
+
+  Future<GmxMailboxSnapshot> selectInbox();
+
+  Future<List<int>> searchUids({int? afterUid});
+
+  Future<List<MimeMessage>> fetchSequenceRange(
+    int firstSequenceId,
+    int lastSequenceId, {
+    required String criteria,
+  });
+
+  Future<List<MimeMessage>> fetchUids(
+    List<int> uids, {
+    required String criteria,
+  });
+
+  Future<void> close();
+}
+
+class EnoughMailGmxImapSession implements GmxImapSession {
+  EnoughMailGmxImapSession(this._client);
+
+  final ImapClient _client;
+
+  @override
+  Future<void> connect(String email, String password) async {
+    await _client.connectToServer('imap.gmx.net', 993, isSecure: true);
+    await _client.login(email, password);
+  }
+
+  @override
+  Future<GmxMailboxSnapshot> selectInbox() async {
+    final mailbox = await _client.selectInbox();
+    return GmxMailboxSnapshot(
+      messagesExists: mailbox.messagesExists,
+      uidValidity: mailbox.uidValidity,
+    );
+  }
+
+  @override
+  Future<List<int>> searchUids({int? afterUid}) async {
+    final result = await _client.uidSearchMessages(
+      searchCriteria: afterUid == null ? 'ALL' : 'UID ${afterUid + 1}:*',
+    );
+    return result.matchingSequence?.toList() ?? const [];
+  }
+
+  @override
+  Future<List<MimeMessage>> fetchSequenceRange(
+    int firstSequenceId,
+    int lastSequenceId, {
+    required String criteria,
+  }) async {
+    final result = await _client.fetchMessages(
+      MessageSequence.fromRange(firstSequenceId, lastSequenceId),
+      criteria,
+    );
+    return result.messages;
+  }
+
+  @override
+  Future<List<MimeMessage>> fetchUids(
+    List<int> uids, {
+    required String criteria,
+  }) async {
+    if (uids.isEmpty) return const [];
+    final result = await _client.uidFetchMessages(
+      MessageSequence.fromIds(uids, isUid: true),
+      criteria,
+    );
+    return result.messages;
+  }
+
+  @override
+  Future<void> close() async {
+    try {
+      if (_client.isLoggedIn) await _client.logout();
+    } catch (_) {
+      // The socket may already be closed after a failed login or scan.
+    }
+  }
+}
+
+class GmxScanCancelledException implements Exception {
+  const GmxScanCancelledException();
+}
+
 class _GmxService {
   _GmxService({
     required this.id,
@@ -262,6 +434,23 @@ class _GmxService {
     required this.domain,
     required this.account,
   });
+
+  factory _GmxService.fromService(ServiceItem service, String account) =>
+      _GmxService(
+          id: service.id,
+          name: service.name,
+          category: service.categoryId,
+          color: service.color,
+          monogram: service.monogram,
+          domain: service.domains.firstOrNull ?? '',
+          account: account,
+        )
+        ..total = service.mailCountFor(account)
+        ..newsletters = service.newsletterCountFor(account)
+        ..security = service.securityCountFor(account)
+        ..hasUnsubscribe = service.hasUnsubscribeLinkFor(account)
+        ..unsubscribeUrl = service.unsubscribeUrlFor(account)
+        ..unsubscribeRequiresPost = service.unsubscribeRequiresPostFor(account);
   final String id;
   final String name;
   final ServiceCategory category;

@@ -1920,6 +1920,7 @@ class _GmxSetupPageState extends State<GmxSetupPage>
   bool _checkingCredential = false;
   int _credentialCheckGeneration = 0;
   bool _busy = false;
+  bool _cancelActiveScan = false;
   int _current = 0;
   int _total = 0;
   String? _message;
@@ -1972,6 +1973,7 @@ class _GmxSetupPageState extends State<GmxSetupPage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) {
       _passwordController.clear();
+      if (_busy) _cancelActiveScan = true;
     }
   }
 
@@ -2031,6 +2033,7 @@ class _GmxSetupPageState extends State<GmxSetupPage>
       return;
     }
     final usesStoredCredential = _credentialAvailable;
+    _cancelActiveScan = false;
     await _run(
       operation: (password) async {
         await (widget.scanner ?? gmxImapScanner).scanAndSave(
@@ -2041,9 +2044,10 @@ class _GmxSetupPageState extends State<GmxSetupPage>
             setState(() {
               _current = current;
               _total = total;
-              _message = '$current von $total Metadaten analysiert';
+              _message = 'Analysiere Nachrichten … $current / $total';
             });
           },
+          isCancelled: () => _cancelActiveScan,
         );
       },
       markScanned: true,
@@ -2070,6 +2074,8 @@ class _GmxSetupPageState extends State<GmxSetupPage>
     setState(() {
       _busy = true;
       _success = false;
+      _current = 0;
+      _total = 0;
       _message = progressMessage;
     });
     try {
@@ -2109,6 +2115,12 @@ class _GmxSetupPageState extends State<GmxSetupPage>
         _credentialAvailable = _savePasswordFor30Days;
         _success = true;
         _message = successMessage;
+      });
+    } on GmxScanCancelledException {
+      if (!mounted) return;
+      setState(() {
+        _message =
+            'Die Synchronisierung wurde unterbrochen. Der letzte vollständige Stand bleibt erhalten.';
       });
     } on GmxCredentialStorageException {
       if (!mounted) return;
@@ -2211,7 +2223,7 @@ class _GmxSetupPageState extends State<GmxSetupPage>
                   number: 3,
                   title: 'Lokal analysieren',
                   description:
-                      'YDI liest höchstens 50 aktuelle Header. Mailtexte und Anhänge bleiben unberührt; die Ergebnisse werden lokal verschlüsselt gespeichert.',
+                      'YDI liest höchstens 5.000 aktuelle Header in kleinen Abschnitten. Mailtexte und Anhänge bleiben unberührt; die Ergebnisse werden lokal verschlüsselt gespeichert.',
                 ),
               ],
               const SizedBox(height: 16),

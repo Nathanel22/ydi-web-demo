@@ -6,6 +6,7 @@ import 'package:ydi_app/data/encrypted_gmx_scan_store.dart';
 import 'package:ydi_app/data/gmx_account_store.dart';
 import 'package:ydi_app/data/scan_data_store.dart';
 import 'package:ydi_app/models/gmx_account.dart';
+import 'package:ydi_app/models/gmx_sync_state.dart';
 import 'package:ydi_app/models/scan_dataset.dart';
 import 'package:ydi_app/models/service_category.dart';
 import 'package:ydi_app/models/service_item.dart';
@@ -103,13 +104,18 @@ void main() {
       notifier: firstNotifier,
     );
 
-    await firstStore.saveGmxDataset(_account, _dataset());
+    await firstStore.saveGmxDataset(
+      _account,
+      _dataset(),
+      syncState: const GmxSyncState(uidValidity: 42, lastProcessedUid: 5000),
+    );
 
     expect(preferences.values, isEmpty);
     expect(file.bytes, isNotNull);
     final encryptedText = utf8.decode(file.bytes!);
     expect(encryptedText, isNot(contains('private-test@example.com')));
     expect(encryptedText, isNot(contains('private-token')));
+    expect(encryptedText, isNot(contains('lastProcessedUid')));
 
     final restartedNotifier = ValueNotifier<ScanDataset?>(null);
     final restartedStore = ScanDataStore(
@@ -124,6 +130,9 @@ void main() {
       restartedNotifier.value?.services.single.unsubscribeUrlFor(_account),
       _tokenUrl,
     );
+    final restoredState = await restartedStore.loadGmxSyncState(_account);
+    expect(restoredState?.uidValidity, 42);
+    expect(restoredState?.lastProcessedUid, 5000);
   });
 
   test('Public Demo liest oder persistiert keine echten GMX-Scans', () async {
@@ -143,6 +152,7 @@ void main() {
       store.saveGmxDataset(_account, _dataset()),
       throwsStateError,
     );
+    await expectLater(store.loadGmxSyncState(_account), throwsStateError);
 
     expect(file.readCount, 0);
     expect(file.bytes, utf8.encode('private-data'));
@@ -227,13 +237,18 @@ void main() {
     var account = await accountStore.ensureAccount('private-test@example.com');
     await credentialManager.saveFor30Days(account, 'synthetic-password');
     account = accountStore.findById(account.accountId)!;
-    await scanStore.saveGmxDataset(account.scanAccountLabel, _dataset());
+    await scanStore.saveGmxDataset(
+      account.scanAccountLabel,
+      _dataset(),
+      syncState: const GmxSyncState(uidValidity: 42, lastProcessedUid: 5000),
+    );
 
     await scanStore.removeAccount(account.scanAccountLabel);
     await credentialManager.deleteAccount(account);
 
     expect(file.bytes, isNull);
     expect(scanNotifier.value, isNull);
+    expect(await scanStore.loadGmxSyncState(account.scanAccountLabel), isNull);
     expect(secureStorage.values, isEmpty);
     expect(accountStore.accounts, isEmpty);
   });

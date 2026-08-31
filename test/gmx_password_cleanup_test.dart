@@ -64,6 +64,7 @@ class _FakeGmxScanner extends GmxImapScanner {
     String email,
     String password, {
     required void Function(int current, int total) onProgress,
+    bool Function()? isCancelled,
   }) async {
     receivedPassword = password;
     if (shouldFail) throw StateError('Synthetic scan failure.');

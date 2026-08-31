@@ -43,8 +43,9 @@ void main() {
     expect(clientCreated, isFalse);
   });
 
-  test('Der private Testscan ist klein und auf Header begrenzt', () {
-    expect(GmxImapScanner.maximumMessages, 50);
+  test('Der private Testscan ist gechunkt und auf Header begrenzt', () {
+    expect(GmxImapScanner.maximumMessages, 5000);
+    expect(GmxImapScanner.chunkSize, 250);
     expect(GmxImapScanner.headerFetchCriteria, contains('FROM'));
     expect(GmxImapScanner.headerFetchCriteria, contains('SUBJECT'));
     expect(GmxImapScanner.headerFetchCriteria, contains('LIST-UNSUBSCRIBE'));

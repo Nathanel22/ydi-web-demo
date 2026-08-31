@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cryptography/cryptography.dart';
 
 import '../models/scan_dataset.dart';
+import '../models/gmx_sync_state.dart';
 import '../services/gmx_credential_manager.dart';
 
 abstract interface class GmxScanFile {
@@ -16,7 +17,15 @@ abstract interface class GmxScanFile {
 abstract interface class GmxScanPersistence {
   Future<ScanDataset?> load();
 
+  Future<GmxSyncState?> loadSyncState(String account);
+
   Future<void> save(ScanDataset? dataset);
+
+  Future<void> saveWithSyncState(
+    ScanDataset dataset,
+    String account,
+    GmxSyncState syncState,
+  );
 
   Future<void> removeAccount(String account);
 
@@ -30,7 +39,17 @@ class NoopGmxScanPersistence implements GmxScanPersistence {
   Future<ScanDataset?> load() async => null;
 
   @override
+  Future<GmxSyncState?> loadSyncState(String account) async => null;
+
+  @override
   Future<void> save(ScanDataset? dataset) async {}
+
+  @override
+  Future<void> saveWithSyncState(
+    ScanDataset dataset,
+    String account,
+    GmxSyncState syncState,
+  ) async {}
 
   @override
   Future<void> removeAccount(String account) async {}
@@ -44,7 +63,7 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
     : _cipher = cipher ?? AesGcm.with256bits();
 
   static const _keyStorageKey = 'ydi_gmx_scan_file_key_v1';
-  static const _version = 1;
+  static const _version = 2;
   static final _associatedData = utf8.encode('ydi-gmx-scan-v1');
 
   final GmxScanFile _file;
@@ -52,7 +71,13 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
   final Cipher _cipher;
 
   @override
-  Future<ScanDataset?> load() async {
+  Future<ScanDataset?> load() async => (await _loadSnapshot())?.dataset;
+
+  @override
+  Future<GmxSyncState?> loadSyncState(String account) async =>
+      (await _loadSnapshot())?.syncStates[account];
+
+  Future<_GmxScanSnapshot?> _loadSnapshot() async {
     final encrypted = await _file.read();
     if (encrypted == null) return null;
     try {
@@ -61,7 +86,8 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
       final envelope = Map<String, dynamic>.from(
         jsonDecode(utf8.decode(encrypted)) as Map,
       );
-      if (envelope['version'] != _version) throw const FormatException();
+      final version = envelope['version'];
+      if (version != 1 && version != _version) throw const FormatException();
       final secretBox = SecretBox(
         base64Decode(envelope['cipherText'] as String),
         nonce: base64Decode(envelope['nonce'] as String),
@@ -72,11 +98,21 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
         secretKey: SecretKey(key),
         aad: _associatedData,
       );
-      final dataset = ScanDataset.fromJson(
-        Map<String, dynamic>.from(jsonDecode(utf8.decode(clearText)) as Map),
+      final decoded = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(clearText)) as Map,
       );
+      final snapshot = version == 1
+          ? _GmxScanSnapshot(
+              dataset: ScanDataset.fromJson(decoded),
+              syncStates: const {},
+            )
+          : _GmxScanSnapshot.fromJson(decoded);
+      final dataset = snapshot.dataset;
       if (!_containsOnlyGmxData(dataset)) throw const FormatException();
-      return dataset;
+      if (!snapshot.syncStates.keys.every(_accountsIn(dataset).contains)) {
+        throw const FormatException();
+      }
+      return snapshot;
     } catch (_) {
       await _clearBestEffort();
       return null;
@@ -90,12 +126,46 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
       await clear();
       return;
     }
-    if (!_containsOnlyGmxData(dataset)) {
+    final existing = await _loadSnapshot();
+    final retainedStates = <String, GmxSyncState>{
+      for (final entry in (existing?.syncStates ?? const {}).entries)
+        if (_accountsIn(dataset).contains(entry.key)) entry.key: entry.value,
+    };
+    await _saveSnapshot(
+      _GmxScanSnapshot(dataset: dataset, syncStates: retainedStates),
+    );
+  }
+
+  @override
+  Future<void> saveWithSyncState(
+    ScanDataset dataset,
+    String account,
+    GmxSyncState syncState,
+  ) async {
+    final existing = await _loadSnapshot();
+    await _saveSnapshot(
+      _GmxScanSnapshot(
+        dataset: dataset,
+        syncStates: {
+          for (final entry in (existing?.syncStates ?? const {}).entries)
+            if (_accountsIn(dataset).contains(entry.key))
+              entry.key: entry.value,
+          account: syncState,
+        },
+      ),
+    );
+  }
+
+  Future<void> _saveSnapshot(_GmxScanSnapshot snapshot) async {
+    if (!_containsOnlyGmxData(snapshot.dataset) ||
+        !snapshot.syncStates.keys.every(
+          _accountsIn(snapshot.dataset).contains,
+        )) {
       throw ArgumentError('Encrypted GMX storage accepts only GMX data.');
     }
     final key = await _keyForWrite();
     final secretBox = await _cipher.encrypt(
-      utf8.encode(jsonEncode(dataset.toJson())),
+      utf8.encode(jsonEncode(snapshot.toJson())),
       secretKey: SecretKey(key),
       aad: _associatedData,
     );
@@ -112,11 +182,18 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
 
   @override
   Future<void> removeAccount(String account) async {
-    final current = await load();
+    final current = await _loadSnapshot();
     if (current == null) return;
-    final updated = current.withoutAccounts({account});
-    await save(
-      updated.services.isEmpty && updated.sourceFiles.isEmpty ? null : updated,
+    final updated = current.dataset.withoutAccounts({account});
+    if (updated.services.isEmpty && updated.sourceFiles.isEmpty) {
+      await clear();
+      return;
+    }
+    await _saveSnapshot(
+      _GmxScanSnapshot(
+        dataset: updated,
+        syncStates: Map.from(current.syncStates)..remove(account),
+      ),
     );
   }
 
@@ -157,6 +234,13 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
     return sourcesAreGmx && accountsAreGmx;
   }
 
+  Set<String> _accountsIn(ScanDataset dataset) => {
+    ...dataset.accounts,
+    ...dataset.sourceFiles
+        .where((source) => source.toLowerCase().startsWith('gmx-imap:'))
+        .map((source) => source.substring('gmx-imap:'.length)),
+  };
+
   bool _sameBytes(List<int> first, List<int> second) {
     if (first.length != second.length) return false;
     var difference = 0;
@@ -173,5 +257,34 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
     try {
       await _secureStorage.delete(_keyStorageKey);
     } catch (_) {}
+  }
+}
+
+class _GmxScanSnapshot {
+  const _GmxScanSnapshot({required this.dataset, required this.syncStates});
+
+  final ScanDataset dataset;
+  final Map<String, GmxSyncState> syncStates;
+
+  Map<String, Object> toJson() => {
+    'dataset': dataset.toJson(),
+    'syncStates': syncStates.map(
+      (account, state) => MapEntry(account, state.toJson()),
+    ),
+  };
+
+  factory _GmxScanSnapshot.fromJson(Map<String, dynamic> json) {
+    final rawStates = Map<String, dynamic>.from(json['syncStates'] as Map);
+    return _GmxScanSnapshot(
+      dataset: ScanDataset.fromJson(
+        Map<String, dynamic>.from(json['dataset'] as Map),
+      ),
+      syncStates: rawStates.map(
+        (account, state) => MapEntry(
+          account,
+          GmxSyncState.fromJson(Map<String, dynamic>.from(state as Map)),
+        ),
+      ),
+    );
   }
 }

@@ -49,22 +49,40 @@ String? _emailAddressFromAccount(String account) {
   return match?.group(0);
 }
 
-Future<void> main() async {
+Future<void> main() => startYdiApp();
+
+/// Shared by the real entry point and initialization tests.
+Future<void> startYdiApp({
+  ScanDataStore? dataStore,
+  Future<void> Function()? initializeOtherServices,
+}) async {
   WidgetsFlutterBinding.ensureInitialized();
+  final store = dataStore ?? scanDataStore;
   if (isPublicDemo) {
     scanDataNotifier.value = publicDemoDataset;
   } else {
-    await scanDataStore.load();
-    await accountScanStore.load();
-    await gmxAccountStore.load();
-    await gmxCredentialManager.discardExpiredCredentials();
-    await googleAuthService.initialize();
+    try {
+      await store.load();
+    } catch (_) {
+      // The store retains the failure state and blocks mutations until retry.
+      // Start the UI so a temporary key/storage failure is recoverable.
+    }
+    await (initializeOtherServices ?? _initializeOtherServices)();
   }
-  runApp(const YdiApp());
+  runApp(YdiApp(dataStore: store));
+}
+
+Future<void> _initializeOtherServices() async {
+  await accountScanStore.load();
+  await gmxAccountStore.load();
+  await gmxCredentialManager.discardExpiredCredentials();
+  await googleAuthService.initialize();
 }
 
 class YdiApp extends StatelessWidget {
-  const YdiApp({super.key});
+  const YdiApp({super.key, this.dataStore});
+
+  final ScanDataStore? dataStore;
 
   @override
   Widget build(BuildContext context) {
@@ -91,11 +109,77 @@ class YdiApp extends StatelessWidget {
               fontFamily: 'Segoe UI',
             ),
           ),
-          home: DashboardPage(key: ValueKey(language)),
+          home: dataStore == null
+              ? DashboardPage(key: ValueKey(language))
+              : ValueListenableBuilder<bool>(
+                  valueListenable: dataStore!.loadFailed,
+                  builder: (context, failed, _) => failed
+                      ? _ScanStorageRecovery(dataStore: dataStore!)
+                      : DashboardPage(key: ValueKey(language)),
+                ),
         );
       },
     );
   }
+}
+
+class _ScanStorageRecovery extends StatefulWidget {
+  const _ScanStorageRecovery({required this.dataStore});
+
+  final ScanDataStore dataStore;
+
+  @override
+  State<_ScanStorageRecovery> createState() => _ScanStorageRecoveryState();
+}
+
+class _ScanStorageRecoveryState extends State<_ScanStorageRecovery> {
+  bool _retrying = false;
+
+  Future<void> _retry() async {
+    setState(() => _retrying = true);
+    try {
+      await widget.dataStore.load();
+    } catch (_) {
+      // Keep the recovery screen and the write protection on repeated failure.
+    } finally {
+      if (mounted) setState(() => _retrying = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('YDI – Your Digital Identity')),
+    body: SafeArea(
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.lock_outline, size: 48),
+              const SizedBox(height: 16),
+              const Text(
+                'Gespeicherte Scandaten konnten nicht geladen werden.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Die vorhandenen Daten bleiben unverändert. Änderungen sind '
+                'zum Schutz deiner Daten vorübergehend gesperrt. '
+                'Entsperre gegebenenfalls dein Gerät und versuche es erneut.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: _retrying ? null : _retry,
+                child: Text(_retrying ? 'Laden …' : 'Erneut laden'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 class DashboardPage extends StatefulWidget {

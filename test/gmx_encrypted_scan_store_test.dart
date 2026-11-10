@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ydi_app/data/encrypted_gmx_scan_store.dart';
@@ -31,17 +32,26 @@ class _MemoryPreferences implements ScanPreferences, GmxAccountPreferences {
 
 class _MemorySecureStorage implements GmxSecureStorage {
   final Map<String, String> values = {};
+  bool failReads = false;
+  bool failWrites = false;
+  bool hideReads = false;
+  int deleteCount = 0;
 
   @override
-  Future<String?> read(String key) async => values[key];
+  Future<String?> read(String key) async {
+    if (failReads) throw StateError('Key temporarily unavailable');
+    return hideReads ? null : values[key];
+  }
 
   @override
   Future<void> write(String key, String value) async {
+    if (failWrites) throw StateError('Key write failed');
     values[key] = value;
   }
 
   @override
   Future<void> delete(String key) async {
+    deleteCount++;
     values.remove(key);
   }
 }
@@ -49,6 +59,8 @@ class _MemorySecureStorage implements GmxSecureStorage {
 class _MemoryGmxScanFile implements GmxScanFile {
   List<int>? bytes;
   var readCount = 0;
+  bool failWrites = false;
+  int deleteCount = 0;
 
   @override
   Future<List<int>?> read() async {
@@ -58,11 +70,13 @@ class _MemoryGmxScanFile implements GmxScanFile {
 
   @override
   Future<void> write(List<int> value) async {
+    if (failWrites) throw StateError('Snapshot write failed');
     bytes = List<int>.from(value);
   }
 
   @override
   Future<void> delete() async {
+    deleteCount++;
     bytes = null;
   }
 }
@@ -93,6 +107,210 @@ EncryptedGmxScanPersistence _encryptedPersistence(
 ) => EncryptedGmxScanPersistence(file, secureStorage);
 
 void main() {
+  for (final failure in ['read', 'missing', 'invalid', 'wrong']) {
+    test(
+      'Key failure ($failure) preserves snapshot, key and sync state',
+      () async {
+        final file = _MemoryGmxScanFile();
+        final keys = _MemorySecureStorage();
+        final store = _encryptedPersistence(file, keys);
+        await store.saveWithSyncState(
+          _dataset(),
+          _account,
+          const GmxSyncState(uidValidity: 42, lastProcessedUid: 5000),
+        );
+        final originalBytes = List<int>.from(file.bytes!);
+        final originalKeys = Map<String, String>.from(keys.values);
+        switch (failure) {
+          case 'read':
+            keys.failReads = true;
+          case 'missing':
+            keys.hideReads = true;
+          case 'invalid':
+            keys.values.updateAll((_, _) => 'not-base64!');
+          case 'wrong':
+            keys.values.updateAll((_, _) => base64Encode(List.filled(32, 0)));
+        }
+        final failingKeys = Map<String, String>.from(keys.values);
+
+        await expectLater(
+          store.load(),
+          throwsA(
+            anyOf(
+              isA<StateError>(),
+              isA<FormatException>(),
+              isA<SecretBoxAuthenticationError>(),
+            ),
+          ),
+        );
+        await expectLater(
+          store.loadSyncState(_account),
+          throwsA(
+            anyOf(
+              isA<StateError>(),
+              isA<FormatException>(),
+              isA<SecretBoxAuthenticationError>(),
+            ),
+          ),
+        );
+        await expectLater(
+          store.save(_dataset()),
+          throwsA(
+            anyOf(
+              isA<StateError>(),
+              isA<FormatException>(),
+              isA<SecretBoxAuthenticationError>(),
+            ),
+          ),
+        );
+        await expectLater(
+          store.saveWithSyncState(
+            _dataset(),
+            _account,
+            const GmxSyncState(uidValidity: 42, lastProcessedUid: 6000),
+          ),
+          throwsA(
+            anyOf(
+              isA<StateError>(),
+              isA<FormatException>(),
+              isA<SecretBoxAuthenticationError>(),
+            ),
+          ),
+        );
+        await expectLater(
+          store.removeAccount(_account),
+          throwsA(
+            anyOf(
+              isA<StateError>(),
+              isA<FormatException>(),
+              isA<SecretBoxAuthenticationError>(),
+            ),
+          ),
+        );
+        expect(file.bytes, originalBytes);
+        expect(keys.values, failingKeys);
+        expect(file.deleteCount, 0);
+        expect(keys.deleteCount, 0);
+
+        keys.failReads = false;
+        keys.hideReads = false;
+        keys.values
+          ..clear()
+          ..addAll(originalKeys);
+        expect((await store.load())?.accounts, contains(_account));
+        expect((await store.loadSyncState(_account))?.lastProcessedUid, 5000);
+      },
+    );
+  }
+
+  for (final failure in ['invalid JSON', 'authentication']) {
+    test('$failure failure preserves encrypted data and key', () async {
+      final file = _MemoryGmxScanFile();
+      final keys = _MemorySecureStorage();
+      final store = _encryptedPersistence(file, keys);
+      await store.save(_dataset());
+      final originalBytes = List<int>.from(file.bytes!);
+      final originalKeys = Map<String, String>.from(keys.values);
+      if (failure == 'invalid JSON') {
+        file.bytes = utf8.encode('{broken');
+      } else {
+        final envelope =
+            jsonDecode(utf8.decode(file.bytes!)) as Map<String, dynamic>;
+        final mac = base64Decode(envelope['mac'] as String);
+        mac[0] ^= 1;
+        envelope['mac'] = base64Encode(mac);
+        file.bytes = utf8.encode(jsonEncode(envelope));
+      }
+      final damagedBytes = List<int>.from(file.bytes!);
+      await expectLater(
+        store.load(),
+        throwsA(
+          anyOf(
+            isA<StateError>(),
+            isA<FormatException>(),
+            isA<SecretBoxAuthenticationError>(),
+          ),
+        ),
+      );
+      await expectLater(
+        store.save(_dataset()),
+        throwsA(
+          anyOf(
+            isA<StateError>(),
+            isA<FormatException>(),
+            isA<SecretBoxAuthenticationError>(),
+          ),
+        ),
+      );
+      expect(file.bytes, damagedBytes);
+      expect(keys.values, originalKeys);
+      expect(file.deleteCount, 0);
+      expect(keys.deleteCount, 0);
+      file.bytes = originalBytes;
+      expect((await store.load())?.accounts, contains(_account));
+    });
+  }
+
+  test(
+    'Failed snapshot write preserves the previous snapshot and key',
+    () async {
+      final file = _MemoryGmxScanFile();
+      final keys = _MemorySecureStorage();
+      final store = _encryptedPersistence(file, keys);
+      await store.saveWithSyncState(
+        _dataset(),
+        _account,
+        const GmxSyncState(uidValidity: 42, lastProcessedUid: 5000),
+      );
+      final previous = List<int>.from(file.bytes!);
+      final previousKeys = Map<String, String>.from(keys.values);
+      file.failWrites = true;
+      await expectLater(
+        store.saveWithSyncState(
+          _dataset(),
+          _account,
+          const GmxSyncState(uidValidity: 42, lastProcessedUid: 6000),
+        ),
+        throwsStateError,
+      );
+      expect(file.bytes, previous);
+      expect(keys.values, previousKeys);
+      expect((await store.loadSyncState(_account))?.lastProcessedUid, 5000);
+    },
+  );
+
+  test(
+    'Failed initial key verification does not delete the stored key',
+    () async {
+      final file = _MemoryGmxScanFile();
+      final keys = _MemorySecureStorage()..hideReads = true;
+      final store = _encryptedPersistence(file, keys);
+      await expectLater(store.save(_dataset()), throwsStateError);
+      expect(file.bytes, isNull);
+      expect(keys.values, hasLength(1));
+      expect(keys.deleteCount, 0);
+      expect(file.deleteCount, 0);
+      final previousKeys = Map<String, String>.from(keys.values);
+      keys.hideReads = false;
+      await store.save(_dataset());
+      expect(keys.values, previousKeys);
+      expect((await store.load())?.accounts, contains(_account));
+    },
+  );
+
+  test('Failed initial key write does not create a snapshot', () async {
+    final file = _MemoryGmxScanFile();
+    final keys = _MemorySecureStorage()..failWrites = true;
+    await expectLater(
+      _encryptedPersistence(file, keys).save(_dataset()),
+      throwsStateError,
+    );
+    expect(file.bytes, isNull);
+    expect(keys.values, isEmpty);
+    expect(file.deleteCount, 0);
+    expect(keys.deleteCount, 0);
+  });
+
   test('Verschlüsselte GMX-Scans überstehen simulierten Neustart', () async {
     final preferences = _MemoryPreferences();
     final secureStorage = _MemorySecureStorage();

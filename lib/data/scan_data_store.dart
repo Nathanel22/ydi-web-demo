@@ -71,9 +71,27 @@ class ScanDataStore {
   final Future<void> Function() _clearAccountScanTimes;
   final Future<void> Function(String account) _removeAccountScanTime;
   final bool publicDemo;
+  final loadFailed = ValueNotifier<bool>(false);
+  bool _loading = false;
 
   Future<void> load() async {
     if (publicDemo) return;
+    if (_loading) throw StateError('Scan data is already loading.');
+    _loading = true;
+    try {
+      await _load();
+      loadFailed.value = false;
+    } catch (_) {
+      loadFailed.value = true;
+      rethrow;
+    } finally {
+      _loading = false;
+    }
+  }
+
+  Future<void> _load() async {
+    // Validate encrypted data before rewriting any persisted preferences.
+    final encryptedGmx = await _gmxPersistence.load();
     ScanDataset? persistent;
     final stored = await _preferences.getString(_storageKey);
     if (stored != null) {
@@ -99,7 +117,6 @@ class ScanDataStore {
       }
     }
 
-    final encryptedGmx = await _gmxPersistence.load();
     final complete = persistent == null
         ? encryptedGmx
         : encryptedGmx == null
@@ -237,6 +254,11 @@ class ScanDataStore {
       dataset.services.isEmpty && dataset.sourceFiles.isEmpty;
 
   void _ensureRealPersistenceAllowed() {
+    if (_loading || loadFailed.value) {
+      throw StateError(
+        'Stored scan data must be loaded before making changes.',
+      );
+    }
     if (publicDemo) {
       throw StateError('Real scan persistence is disabled in demos.');
     }

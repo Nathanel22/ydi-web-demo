@@ -80,43 +80,40 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
   Future<_GmxScanSnapshot?> _loadSnapshot() async {
     final encrypted = await _file.read();
     if (encrypted == null) return null;
-    try {
-      final key = await _readKey();
-      if (key == null) throw const FormatException();
-      final envelope = Map<String, dynamic>.from(
-        jsonDecode(utf8.decode(encrypted)) as Map,
-      );
-      final version = envelope['version'];
-      if (version != 1 && version != _version) throw const FormatException();
-      final secretBox = SecretBox(
-        base64Decode(envelope['cipherText'] as String),
-        nonce: base64Decode(envelope['nonce'] as String),
-        mac: Mac(base64Decode(envelope['mac'] as String)),
-      );
-      final clearText = await _cipher.decrypt(
-        secretBox,
-        secretKey: SecretKey(key),
-        aad: _associatedData,
-      );
-      final decoded = Map<String, dynamic>.from(
-        jsonDecode(utf8.decode(clearText)) as Map,
-      );
-      final snapshot = version == 1
-          ? _GmxScanSnapshot(
-              dataset: ScanDataset.fromJson(decoded),
-              syncStates: const {},
-            )
-          : _GmxScanSnapshot.fromJson(decoded);
-      final dataset = snapshot.dataset;
-      if (!_containsOnlyGmxData(dataset)) throw const FormatException();
-      if (!snapshot.syncStates.keys.every(_accountsIn(dataset).contains)) {
-        throw const FormatException();
-      }
-      return snapshot;
-    } catch (_) {
-      await _clearBestEffort();
-      return null;
+    // Read failures must remain distinguishable from an absent file. In
+    // particular, never delete or overwrite data when the key is unavailable.
+    final key = await _readKey();
+    if (key == null) throw const FormatException();
+    final envelope = Map<String, dynamic>.from(
+      jsonDecode(utf8.decode(encrypted)) as Map,
+    );
+    final version = envelope['version'];
+    if (version != 1 && version != _version) throw const FormatException();
+    final secretBox = SecretBox(
+      base64Decode(envelope['cipherText'] as String),
+      nonce: base64Decode(envelope['nonce'] as String),
+      mac: Mac(base64Decode(envelope['mac'] as String)),
+    );
+    final clearText = await _cipher.decrypt(
+      secretBox,
+      secretKey: SecretKey(key),
+      aad: _associatedData,
+    );
+    final decoded = Map<String, dynamic>.from(
+      jsonDecode(utf8.decode(clearText)) as Map,
+    );
+    final snapshot = version == 1
+        ? _GmxScanSnapshot(
+            dataset: ScanDataset.fromJson(decoded),
+            syncStates: const {},
+          )
+        : _GmxScanSnapshot.fromJson(decoded);
+    final dataset = snapshot.dataset;
+    if (!_containsOnlyGmxData(dataset)) throw const FormatException();
+    if (!snapshot.syncStates.keys.every(_accountsIn(dataset).contains)) {
+      throw const FormatException();
     }
+    return snapshot;
   }
 
   @override
@@ -213,12 +210,14 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
   Future<List<int>> _keyForWrite() async {
     final existing = await _readKey();
     if (existing != null) return existing;
+    if (await _file.read() != null) {
+      throw StateError('Existing GMX scan data has no available key.');
+    }
     final secretKey = await _cipher.newSecretKey();
     final key = await secretKey.extractBytes();
     await _secureStorage.write(_keyStorageKey, base64Encode(key));
     final verified = await _readKey();
     if (verified == null || !_sameBytes(key, verified)) {
-      await _clearBestEffort();
       throw StateError('Secure scan storage is unavailable.');
     }
     return key;
@@ -248,15 +247,6 @@ class EncryptedGmxScanPersistence implements GmxScanPersistence {
       difference |= first[index] ^ second[index];
     }
     return difference == 0;
-  }
-
-  Future<void> _clearBestEffort() async {
-    try {
-      await _file.delete();
-    } catch (_) {}
-    try {
-      await _secureStorage.delete(_keyStorageKey);
-    } catch (_) {}
   }
 }
 

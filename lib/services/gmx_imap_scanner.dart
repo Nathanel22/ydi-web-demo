@@ -8,6 +8,8 @@ import '../models/scan_dataset.dart';
 import '../models/gmx_sync_state.dart';
 import '../models/service_category.dart';
 import '../models/service_item.dart';
+import '../models/unsubscribe_option.dart';
+import 'unsubscribe_header_parser.dart';
 
 final gmxImapScanner = GmxImapScanner();
 
@@ -224,9 +226,18 @@ class GmxImapScanner {
     );
     item.total++;
     final subject = (message.decodeSubject() ?? '').toLowerCase();
-    final unsubscribe = message.getHeaderValue('list-unsubscribe') ?? '';
+    final unsubscribe =
+        message
+            .getHeader('list-unsubscribe')
+            ?.map((header) => header.value ?? '')
+            .toList() ??
+        const <String>[];
     final unsubscribePost =
-        message.getHeaderValue('list-unsubscribe-post') ?? '';
+        message
+            .getHeader('list-unsubscribe-post')
+            ?.map((header) => header.value ?? '')
+            .toList() ??
+        const <String>[];
     final listId = message.getHeaderValue('list-id') ?? '';
     if (unsubscribe.isNotEmpty ||
         listId.isNotEmpty ||
@@ -234,19 +245,26 @@ class GmxImapScanner {
       item.newsletters++;
     }
     if (_containsAny(subject, _securityWords)) item.security++;
-    if (unsubscribe.isNotEmpty) item.hasUnsubscribe = true;
-    item.unsubscribeUrl ??= _httpsUrlFrom(unsubscribe);
-    if (unsubscribePost.toLowerCase().contains('list-unsubscribe=one-click')) {
+    final options = const UnsubscribeHeaderParser().parse(
+      account: account,
+      listUnsubscribe: unsubscribe,
+      listUnsubscribePost: unsubscribePost,
+    );
+    item.unsubscribeOptions.addAll(options);
+    if (options.isNotEmpty) item.hasUnsubscribe = true;
+    // Keep mailto metadata out of the existing browser-only UI. POST/unknown
+    // methods stay blocked by its existing safety flag; nothing is executed.
+    item.unsubscribeUrl ??= options
+        .where((option) => option.isWebLink)
+        .firstOrNull
+        ?.uri
+        .toString();
+    if (options.any(
+      (option) =>
+          option.isWebLink && option.method != UnsubscribeMethod.httpGet,
+    )) {
       item.unsubscribeRequiresPost = true;
     }
-  }
-
-  String? _httpsUrlFrom(String header) {
-    final match = RegExp(
-      r'https?://[^>\s,]+',
-      caseSensitive: false,
-    ).firstMatch(header);
-    return match?.group(0);
   }
 
   ServiceItem? _knownService(String domain, List<ServiceItem> services) {
@@ -450,7 +468,12 @@ class _GmxService {
         ..security = service.securityCountFor(account)
         ..hasUnsubscribe = service.hasUnsubscribeLinkFor(account)
         ..unsubscribeUrl = service.unsubscribeUrlFor(account)
-        ..unsubscribeRequiresPost = service.unsubscribeRequiresPostFor(account);
+        ..unsubscribeRequiresPost = service.unsubscribeRequiresPostFor(account)
+        ..unsubscribeOptions.addAll(
+          service.unsubscribeOptions.where(
+            (option) => option.account == account,
+          ),
+        );
   final String id;
   final String name;
   final ServiceCategory category;
@@ -464,6 +487,7 @@ class _GmxService {
   bool hasUnsubscribe = false;
   String? unsubscribeUrl;
   bool unsubscribeRequiresPost = false;
+  final List<UnsubscribeOption> unsubscribeOptions = [];
 
   ServiceItem build() => ServiceItem(
     id: id,
@@ -480,6 +504,7 @@ class _GmxService {
       if (unsubscribeUrl != null) account: unsubscribeUrl!,
     },
     unsubscribeRequiresPostByAccount: {account: unsubscribeRequiresPost},
+    unsubscribeOptions: unsubscribeOptions.toSet().toList(growable: false),
   );
 }
 

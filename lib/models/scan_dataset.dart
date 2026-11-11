@@ -59,6 +59,12 @@ class ScanDataset {
           ...existing.unsubscribeRequiresPostByAccount,
           ...incoming.unsubscribeRequiresPostByAccount,
         },
+        unsubscribeOptions: {
+          ...existing.unsubscribeOptions.where(
+            (option) => !incoming.accounts.contains(option.account),
+          ),
+          ...incoming.unsubscribeOptions,
+        }.toList(growable: false),
       );
     }
 
@@ -111,6 +117,9 @@ class ScanDataset {
           unsubscribeByAccount: unsubscribeByAccount,
           unsubscribeUrlsByAccount: unsubscribeUrlsByAccount,
           unsubscribeRequiresPostByAccount: unsubscribeRequiresPostByAccount,
+          unsubscribeOptions: service.unsubscribeOptions
+              .where((option) => !removedAccounts.contains(option.account))
+              .toList(growable: false),
         ),
       );
     }

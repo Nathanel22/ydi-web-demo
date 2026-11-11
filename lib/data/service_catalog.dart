@@ -1161,6 +1161,7 @@ abstract final class ServiceCatalog {
         unsubscribeUrlsByAccount: service.unsubscribeUrlsByAccount,
         unsubscribeRequiresPostByAccount:
             service.unsubscribeRequiresPostByAccount,
+        unsubscribeOptions: service.unsubscribeOptions,
       );
 
       final existing = normalized[resolved.id];
@@ -1200,6 +1201,10 @@ abstract final class ServiceCatalog {
           ...first.unsubscribeRequiresPostByAccount,
           ...second.unsubscribeRequiresPostByAccount,
         },
+        unsubscribeOptions: {
+          ...first.unsubscribeOptions,
+          ...second.unsubscribeOptions,
+        }.toList(growable: false),
       );
 
   static Map<String, int> _sumCounts(

@@ -6,6 +6,7 @@ import 'package:ydi_app/data/encrypted_gmx_scan_store.dart';
 import 'package:ydi_app/data/scan_data_store.dart';
 import 'package:ydi_app/models/gmx_sync_state.dart';
 import 'package:ydi_app/models/scan_dataset.dart';
+import 'package:ydi_app/models/unsubscribe_option.dart';
 import 'package:ydi_app/services/gmx_imap_scanner.dart';
 
 const _email = 'private-test@example.com';
@@ -73,11 +74,13 @@ class _FakeGmxSession implements GmxImapSession {
     required this.uids,
     this.uidValidity = 42,
     this.failOnFetchNumber,
+    this.headerLinesByUid = const {},
   });
 
   final List<int> uids;
   final int? uidValidity;
   final int? failOnFetchNumber;
+  final Map<int, String> headerLinesByUid;
   final List<List<int>> fetchedChunks = [];
   final List<String> criteria = [];
   int? searchedAfterUid;
@@ -123,6 +126,7 @@ class _FakeGmxSession implements GmxImapSession {
   MimeMessage _message(int uid) => MimeMessage.parseFromText(
     'From: Sender <sender@example.com>\r\n'
     'Subject: Synthetic message $uid\r\n'
+    '${headerLinesByUid[uid] ?? ''}'
     '\r\n',
   )..uid = uid;
 
@@ -168,6 +172,107 @@ Future<ScanDataset> _scan(
 );
 
 void main() {
+  test(
+    'GMX keeps repeated unsubscribe headers, comma URLs and methods together',
+    () async {
+      final setup = _scannerWith(
+        _FakeGmxSession(
+          uids: [1],
+          headerLinesByUid: {
+            1:
+                'List-Unsubscribe: <https://example.com/a,b?token=x,y>\r\n'
+                'List-Unsubscribe: <mailto:leave@example.com>\r\n'
+                'List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n',
+          },
+        ),
+      );
+      final service = (await _scan(setup.scanner)).services.single;
+      expect(service.newsletterCountFor(_account), 1);
+      expect(service.unsubscribeOptions.map((option) => option.method), [
+        UnsubscribeMethod.oneClickPost,
+        UnsubscribeMethod.mailto,
+      ]);
+      expect(
+        service.unsubscribeOptions.every(
+          (option) => option.account == _account,
+        ),
+        isTrue,
+      );
+      expect(
+        service.unsubscribeUrlFor(_account),
+        'https://example.com/a,b?token=x,y',
+      );
+      expect(service.unsubscribeRequiresPostFor(_account), isTrue);
+    },
+  );
+
+  test(
+    'GMX incremental scans retain old and new structured metadata',
+    () async {
+      final first = _scannerWith(
+        _FakeGmxSession(
+          uids: [1],
+          headerLinesByUid: {
+            1: 'List-Unsubscribe: <https://example.com/old>\r\n',
+          },
+        ),
+      );
+      await _scan(first.scanner);
+      final next = _scannerWith(
+        _FakeGmxSession(
+          uids: [1, 2],
+          headerLinesByUid: {
+            2: 'List-Unsubscribe: <mailto:leave@example.com>\r\n',
+          },
+        ),
+        persistence: first.persistence,
+      );
+      final service = (await _scan(next.scanner)).services.single;
+      expect(
+        service.unsubscribeOptions.map((option) => option.uri.toString()),
+        ['https://example.com/old', 'mailto:leave@example.com'],
+      );
+    },
+  );
+
+  test(
+    'GMX mailto metadata does not become an implicit browser action',
+    () async {
+      final setup = _scannerWith(
+        _FakeGmxSession(
+          uids: [1],
+          headerLinesByUid: {
+            1: 'List-Unsubscribe: <mailto:leave@example.com>\r\n',
+          },
+        ),
+      );
+      final service = (await _scan(setup.scanner)).services.single;
+      expect(service.hasUnsubscribeLinkFor(_account), isTrue);
+      expect(service.unsubscribeUrlFor(_account), isNull);
+      expect(
+        service.unsubscribeOptions.single.method,
+        UnsubscribeMethod.mailto,
+      );
+    },
+  );
+
+  test(
+    'Invalid GMX header does not become an executable unsubscribe link',
+    () async {
+      final setup = _scannerWith(
+        _FakeGmxSession(
+          uids: [1],
+          headerLinesByUid: {1: 'List-Unsubscribe: <javascript:bad>\r\n'},
+        ),
+      );
+      final service = (await _scan(setup.scanner)).services.single;
+      expect(service.newsletterCountFor(_account), 1);
+      expect(service.hasUnsubscribeLinkFor(_account), isFalse);
+      expect(service.unsubscribeOptions, isEmpty);
+      expect(service.unsubscribeUrlFor(_account), isNull);
+    },
+  );
+
   test('Erstscan verarbeitet mehrere kontrollierte Chunks', () async {
     final session = _FakeGmxSession(
       uids: [for (var uid = 1; uid <= 730; uid++) uid],

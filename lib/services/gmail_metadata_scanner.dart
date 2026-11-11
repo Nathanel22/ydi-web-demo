@@ -9,21 +9,35 @@ import '../data/service_catalog.dart';
 import '../models/scan_dataset.dart';
 import '../models/service_category.dart';
 import '../models/service_item.dart';
+import '../models/unsubscribe_option.dart';
+import 'unsubscribe_header_parser.dart';
 import 'google_auth_service.dart';
 
 final gmailMetadataScanner = GmailMetadataScanner();
 
 class GmailMetadataScanner {
+  GmailMetadataScanner({
+    Future<Map<String, String>> Function(GoogleSignInAccount)?
+    authorizeMetadata,
+    this.dataStore,
+  }) : _authorizeMetadata =
+           authorizeMetadata ?? googleAuthService.authorizeGmailMetadata;
+
+  final Future<Map<String, String>> Function(GoogleSignInAccount)
+  _authorizeMetadata;
+  final ScanDataStore? dataStore;
+  ScanDataStore get _store => dataStore ?? scanDataStore;
+
   static const _maximumMessages = 1000;
 
   Future<ScanDataset> scanAndSave(
     GoogleSignInAccount user, {
     required void Function(int current, int total) onProgress,
   }) async {
-    final headers = await googleAuthService.authorizeGmailMetadata(user);
+    final headers = await _authorizeMetadata(user);
     final messageIds = await _listMessageIds(headers);
     final account = accountLabelFor(user.email);
-    final knownServices = scanDataNotifier.value?.services ?? const [];
+    final knownServices = _store.notifier.value?.services ?? const [];
     final aggregated = <String, _LiveService>{};
 
     const chunkSize = 10;
@@ -48,7 +62,7 @@ class GmailMetadataScanner {
       sourceFiles: ['gmail-api:$account'],
     );
 
-    final current = scanDataNotifier.value;
+    final current = _store.notifier.value;
     final labelsToReplace = {
       ...accountLabelsFor(user.email),
       ...?current?.accounts.where(
@@ -58,8 +72,8 @@ class GmailMetadataScanner {
     final complete = current == null
         ? incoming
         : current.withoutAccounts(labelsToReplace).mergedWith(incoming);
-    await scanDataStore.save(complete);
-    return scanDataNotifier.value!;
+    await _store.save(complete);
+    return _store.notifier.value!;
   }
 
   Future<List<String>> _listMessageIds(Map<String, String> headers) async {
@@ -106,6 +120,7 @@ class GmailMetadataScanner {
       '&metadataHeaders=From'
       '&metadataHeaders=Subject'
       '&metadataHeaders=List-Unsubscribe'
+      '&metadataHeaders=List-Unsubscribe-Post'
       '&metadataHeaders=List-ID',
     );
     final response = await http.get(uri, headers: headers);
@@ -114,17 +129,19 @@ class GmailMetadataScanner {
     final json = jsonDecode(response.body) as Map<String, dynamic>;
     final payload = json['payload'] as Map<String, dynamic>?;
     final rawHeaders = (payload?['headers'] as List<dynamic>?) ?? const [];
-    final values = <String, String>{};
+    final values = <String, List<String>>{};
     for (final raw in rawHeaders) {
       final header = raw as Map<String, dynamic>;
-      values[(header['name'] as String).toLowerCase()] =
-          header['value'] as String? ?? '';
+      values
+          .putIfAbsent((header['name'] as String).toLowerCase(), () => [])
+          .add(header['value'] as String? ?? '');
     }
     return _MessageMetadata(
-      from: values['from'] ?? '',
-      subject: values['subject'] ?? '',
-      listUnsubscribe: values['list-unsubscribe'] ?? '',
-      listId: values['list-id'] ?? '',
+      from: values['from']?.firstOrNull ?? '',
+      subject: values['subject']?.firstOrNull ?? '',
+      listUnsubscribe: values['list-unsubscribe'] ?? const [],
+      listUnsubscribePost: values['list-unsubscribe-post'] ?? const [],
+      listId: values['list-id']?.firstOrNull ?? '',
     );
   }
 
@@ -168,7 +185,24 @@ class GmailMetadataScanner {
       item.newsletters++;
     }
     if (_containsAny(subject, _securityWords)) item.security++;
-    if (message.listUnsubscribe.isNotEmpty) item.hasUnsubscribe = true;
+    final options = const UnsubscribeHeaderParser().parse(
+      account: account,
+      listUnsubscribe: message.listUnsubscribe,
+      listUnsubscribePost: message.listUnsubscribePost,
+    );
+    item.unsubscribeOptions.addAll(options);
+    if (options.isNotEmpty) item.hasUnsubscribe = true;
+    item.unsubscribeUrl ??= options
+        .where((option) => option.isWebLink)
+        .firstOrNull
+        ?.uri
+        .toString();
+    if (options.any(
+      (option) =>
+          option.isWebLink && option.method != UnsubscribeMethod.httpGet,
+    )) {
+      item.unsubscribeRequiresPost = true;
+    }
   }
 
   ServiceItem? _knownService(String domain, List<ServiceItem> services) {
@@ -312,12 +346,14 @@ class _MessageMetadata {
     required this.from,
     required this.subject,
     required this.listUnsubscribe,
+    required this.listUnsubscribePost,
     required this.listId,
   });
 
   final String from;
   final String subject;
-  final String listUnsubscribe;
+  final List<String> listUnsubscribe;
+  final List<String> listUnsubscribePost;
   final String listId;
 }
 
@@ -343,6 +379,9 @@ class _LiveService {
   int newsletters = 0;
   int security = 0;
   bool hasUnsubscribe = false;
+  String? unsubscribeUrl;
+  bool unsubscribeRequiresPost = false;
+  final List<UnsubscribeOption> unsubscribeOptions = [];
 
   ServiceItem build() => ServiceItem(
     id: id,
@@ -355,5 +394,8 @@ class _LiveService {
     newsletterCounts: {account: newsletters},
     securityCounts: {account: security},
     unsubscribeByAccount: {account: hasUnsubscribe},
+    unsubscribeUrlsByAccount: {account: ?unsubscribeUrl},
+    unsubscribeRequiresPostByAccount: {account: unsubscribeRequiresPost},
+    unsubscribeOptions: unsubscribeOptions.toSet().toList(growable: false),
   );
 }

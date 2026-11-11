@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'service_category.dart';
+import 'unsubscribe_option.dart';
 
 class ServiceItem {
   const ServiceItem({
@@ -16,6 +17,7 @@ class ServiceItem {
     this.unsubscribeByAccount = const {},
     this.unsubscribeUrlsByAccount = const {},
     this.unsubscribeRequiresPostByAccount = const {},
+    this.unsubscribeOptions = const [],
   });
 
   final String id;
@@ -30,6 +32,9 @@ class ServiceItem {
   final Map<String, bool> unsubscribeByAccount;
   final Map<String, String> unsubscribeUrlsByAccount;
   final Map<String, bool> unsubscribeRequiresPostByAccount;
+
+  /// Optional structured metadata; legacy UI fields remain supported.
+  final List<UnsubscribeOption> unsubscribeOptions;
 
   String get category => categoryId.germanLabel;
   List<String> get accounts => mailCounts.keys.toList();
@@ -91,6 +96,9 @@ class ServiceItem {
     'unsubscribeByAccount': unsubscribeByAccount,
     'unsubscribeUrlsByAccount': unsubscribeUrlsByAccount,
     'unsubscribeRequiresPostByAccount': unsubscribeRequiresPostByAccount,
+    'unsubscribeOptions': unsubscribeOptions
+        .map((option) => option.toJson())
+        .toList(),
   };
 
   factory ServiceItem.fromJson(Map<String, dynamic> json) => ServiceItem(
@@ -105,6 +113,13 @@ class ServiceItem {
     securityCounts: _intMap(json['securityCounts']),
     unsubscribeByAccount: _boolMap(json['unsubscribeByAccount']),
     unsubscribeUrlsByAccount: _stringMap(json['unsubscribeUrlsByAccount']),
+    unsubscribeOptions: json['unsubscribeOptions'] is List
+        ? (json['unsubscribeOptions'] as List)
+              .map(UnsubscribeOption.tryFromJson)
+              .whereType<UnsubscribeOption>()
+              .toSet()
+              .toList(growable: false)
+        : const [],
     unsubscribeRequiresPostByAccount:
         json.containsKey('unsubscribeRequiresPostByAccount')
         ? _boolMap(json['unsubscribeRequiresPostByAccount'])
